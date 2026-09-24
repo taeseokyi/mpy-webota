@@ -660,6 +660,23 @@ def main():
     check("device-config — 기본값 + app_id + device 절 + 토큰", dc["app_id"] == "myapp" and dc["hostname"] == "myapp"
           and dc["token"] == "T" * 32 and dc["port"] == 8266 and dc["app"] == "app")
 
+    print("== 앱 없는 기기(첫 부팅 기본 설정)의 첫 설치 — 그 앱을 받아들인다")
+    saved_app = webota.cfg.get("app_id")
+    d = wb.read_json("/webota.json"); d.pop("app_id", None); wb.write_json("/webota.json", d)
+    webota.cfg["app_id"] = None
+    cl.build_package(files3, os.path.join(pk, "adopt.wpk"), "freshapp", "1.0.0", "v1.0.0",
+                     app="app", entry="main", data=["/data"])
+    n0 = len(resets)
+    r = api.pkg_install(base_url + "/adopt.wpk", wait=False, log=lambda *_: None)
+    wait_resets(resets, n0 + 1); wb.apply()
+    d = wb.read_json("/webota.json")
+    check("첫 설치 — app_id·app·entry 를 받아들임(토큰 유지)", r == "committed" and d.get("app_id") == "freshapp"
+          and d.get("app") == "app" and d.get("token") == "t0k", d)
+    webota.load_config()
+    check("다시 읽은 설정의 app_id", webota.cfg.get("app_id") == "freshapp")
+    wb.confirm()
+    d["app_id"] = saved_app; wb.write_json("/webota.json", d); webota.cfg["app_id"] = saved_app
+
     print("== CLI")
     base = ["--host", "127.0.0.1:%d" % port, "--token", "t0k", "-y"]
     check("cli ls", cl.main(base + ["ls", "/data"]) == 0)
