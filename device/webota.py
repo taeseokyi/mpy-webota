@@ -52,7 +52,7 @@ import time
 
 import webota_boot as wb
 
-VERSION = "0.9.1"
+VERSION = "0.9.2"
 CONFIG = "/webota.json"
 DEFAULTS = {"port": 8266, "app": "app", "entry": "main", "wifi_file": None,
             "wifi_keys": ["ssid", "pass"], "wifi_timeout_s": 20, "confirm_s": 90,
@@ -328,7 +328,7 @@ def status():
           "last": wb.read_json(wb.DIR + "/last.json"),
           "deploy_id": _deploy_id, "confirm_s": cfg.get("confirm_s"),
           "app_id": cfg.get("app_id"), "current": _current(),
-          "modified": wb.read_json(wb.DIR + "/modified.json"),
+          "modified": _modified_now(),
           "installed": _inst_summary(), "prev": wb.exists(wb.DIR + "/prev"),
           "wifi": _wifi_status(),
           "keep": dict(zip(("settings", "data"), keep_lists()))}
@@ -577,7 +577,32 @@ def _mark_modified(path):
     paths = m.get("paths") or []
     if path not in paths:
         paths.append(path)
-    wb.write_json(wb.DIR + "/modified.json", {"paths": paths[-200:], "at": wb.stamp()})
+    _write_modified(paths)
+
+
+def _installed_files():
+    return set((wb.read_json(wb.DIR + "/installed.json") or {}).get("files") or [])
+
+
+def _modified_now():
+    """판 이탈의 **지금** 모습 — 기록된 경로 중 ①아직 있는 것(더했거나 고친 것) ②판에 있는데
+    사라진 것(지운 것)만 남긴다. 판에 없던 파일을 더했다가 지웠으면 이탈이 아니다(0.9.2: 정리로
+    지운 파일이 '수동 변경'에 계속 남던 문제)."""
+    m = wb.read_json(wb.DIR + "/modified.json")
+    if not m:
+        return None
+    inst = _installed_files()
+    paths = [x for x in m.get("paths") or [] if wb.exists(x) or x in inst]
+    if paths != (m.get("paths") or []):
+        _write_modified(paths)
+    return {"paths": paths, "at": m.get("at")} if paths else None
+
+
+def _write_modified(paths):
+    if paths:
+        wb.write_json(wb.DIR + "/modified.json", {"paths": paths[-200:], "at": wb.stamp()})
+    else:
+        wb.remove(wb.DIR + "/modified.json")
 
 
 def _save_config(c):
@@ -649,6 +674,7 @@ def _pkg(conn, method, rest, q, rf, clen):
                     os.remove(wb.p(n))
                     wb.prune_empty(n)
                     done.append(n)
+                    _modified_now()                     # 판에 없던 파일을 지웠다 — 이탈 기록에서 빠진다
                 except OSError:
                     refused.append(n)
             else:

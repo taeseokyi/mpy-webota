@@ -723,6 +723,21 @@ def main():
           and took < webota.HEAD_TIMEOUT_S + 2, took)
     check("빈 연결에는 500 을 보내지 않고 닫는다", leftover == b"", leftover[:60])
 
+    print("== 수동 변경 — 더했다 지운 파일은 이탈이 아니다(0.9.2)")
+    probe = os.path.join(local, "zz_probe.py"); open(probe, "w").write("# p\n")
+    api.put(probe, "/zz_probe.py")
+    check("더하면 수동 변경", "/zz_probe.py" in (api.status()["modified"] or {}).get("paths", []))
+    api.clean(["/zz_probe.py"])
+    m = api.status()["modified"]
+    check("정리로 지우면 수동 변경에서 빠짐", not m or "/zz_probe.py" not in m["paths"], m)
+    inst_files = sorted(wb.read_json(wb.DIR + "/installed.json")["files"])
+    victim = inst_files[0]
+    body = rd(victim)
+    api.rm(victim)
+    m = api.status()["modified"]
+    check("판에 있던 파일을 지우면 수동 변경으로 남음", m and victim in m["paths"], (victim, m))
+    wr(victim, body)
+
     print("== CLI")
     base = ["--host", "127.0.0.1:%d" % port, "--token", "t0k", "-y"]
     check("cli ls", cl.main(base + ["ls", "/data"]) == 0)
