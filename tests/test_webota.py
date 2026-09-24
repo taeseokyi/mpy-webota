@@ -531,6 +531,24 @@ def main():
     wb.apply(); wb.apply(); wb.apply()
     check("데이터 초기화 롤백 — 데이터 복원", wb.exists("/data/m.dat") and rd("/logs/l.txt") == b"log")
 
+    print("== 데이터 안의 설정 · WiFi 파일 보호")
+    cl.build_package(files3, os.path.join(pk, "p5.wpk"), "testapp", "5.0.0", "v5.0.0",
+                     settings=["/config.json", "/data/dev.json", "/data/wifi.json"], data=["/data"])
+    n0 = len(resets)
+    api.pkg_install(base_url + "/p5.wpk", wait=False, log=lambda *_: None)
+    wait_resets(resets, n0 + 1); wb.apply(); wb.confirm()
+    wr("/data/dev.json", '{"id": 7}'); wr("/data/wifi.json", '{"ssid": "X"}'); wr("/data/m.dat", "1")
+    webota.cfg["wifi_file"] = "/data/wifi.json"
+    check("데이터 디렉토리 안의 선언된 설정 = 설정", webota.kind_of("/data/dev.json") == "setting"
+          and webota.kind_of("/data/m.dat") == "data")
+    pl = api.pkg_plan(base_url + "/p5.wpk", reset_data=True)
+    check("데이터 초기화 — 데이터 안의 설정은 빼고", "/data/m.dat" in pl["delete_reset"]
+          and "/data/dev.json" not in pl["delete_reset"] and "/data/wifi.json" not in pl["delete_reset"], pl["delete_reset"])
+    pl = api.pkg_plan(base_url + "/p5.wpk", reset_settings=True)
+    check("설정 초기화 — 데이터 안의 설정도 대상, WiFi 파일은 보호", "/data/dev.json" in pl["delete_reset"]
+          and "/data/wifi.json" not in pl["delete_reset"] and "/data/m.dat" not in pl["delete"], pl["delete_reset"])
+    webota.cfg.pop("wifi_file", None)
+
     print("== CLI")
     base = ["--host", "127.0.0.1:%d" % port, "--token", "t0k", "-y"]
     check("cli ls", cl.main(base + ["ls", "/data"]) == 0)

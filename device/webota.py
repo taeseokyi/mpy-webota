@@ -44,7 +44,7 @@ import time
 
 import webota_boot as wb
 
-VERSION = "0.6.0"
+VERSION = "0.6.1"
 CONFIG = "/webota.json"
 DEFAULTS = {"port": 8266, "app": "app", "entry": "main", "wifi_file": None,
             "wifi_keys": ["ssid", "pass"], "wifi_timeout_s": 20, "confirm_s": 90,
@@ -400,11 +400,13 @@ def keep_lists(extra=None, current=True):
 
 
 def kind_of(path, extra=None):
+    """설정이 데이터보다 먼저다 — 데이터 디렉토리 안의 설정 파일(예: /data/devices.json)도
+    선언했으면 설정이다(설정 초기화는 되고, 데이터 초기화는 안 된다)."""
     settings, data = keep_lists(extra)
-    if _under(path, data):
-        return "data"
     if _under(path, settings):
         return "setting"
+    if _under(path, data):
+        return "data"
     return "core" if path in CORE else "code"
 
 
@@ -484,17 +486,21 @@ def _plan(man, reset_settings=False, reset_data=False):
     newset = set(new_files)
     write, skip_setting = [], []
     for f in man.get("files") or []:
-        if f.get("kind") == "setting" and wb.exists(f["path"]) and not reset_settings:
+        if f.get("kind") == "setting" and wb.exists(f["path"]) and (
+                not reset_settings or f["path"] == cfg.get("wifi_file")):
             skip_setting.append(f["path"])
         elif sha_file(f["path"]) != f["sha"].lower():
             write.append(f["path"])
     deletes = [e for e in _code_files(man, current=False) if e not in newset]
     ks0, kd0 = keep_lists(man, current=False)
+    # 초기화에서도 지키는 것: webota 자신, 그리고 webota 가 WiFi 에 붙을 때 읽는 파일
+    #   (wifi_file — 이걸 지우면 원격 접속이 끊긴다).
+    never = [CONFIG, wb.DIR] + ([cfg["wifi_file"]] if cfg.get("wifi_file") else [])
     reset = []
     if reset_settings:
-        reset += [e for e in _files_under(ks0[1:]) if e not in newset and e != CONFIG]
-    if reset_data:
-        reset += [e for e in _files_under(kd0[1:]) if not _under(e, [wb.DIR])]
+        reset += [e for e in _files_under(ks0[1:]) if e not in newset and not _under(e, never)]
+    if reset_data:                                     # 선언된 설정은 데이터 초기화에서 빠진다
+        reset += [e for e in _files_under(kd0[1:]) if not _under(e, never + ks0[1:])]
     deletes += [e for e in reset if e not in deletes]
     cur_s, cur_d = keep_lists()                        # 지금 판에서 설정·데이터였던 것
     risky = [e for e in deletes if _under(e, cur_s[1:] + cur_d[1:])]
@@ -647,7 +653,8 @@ def _pkg(conn, method, rest, q, rf, clen):
         try:
             ok, msg, man, changed = pkg.install(body["url"], None if switch else cfg.get("app_id"),
                                                 stage, sha_file,
-                                                reset_settings=bool(body.get("reset_settings")))
+                                                reset_settings=bool(body.get("reset_settings")),
+                                                keep_always=[cfg["wifi_file"]] if cfg.get("wifi_file") else [])
         except Exception as e:
             ok, msg, man, changed = False, "내려받기 실패: %r" % e, None, []
         if not ok:

@@ -291,7 +291,7 @@ def read_manifest(url):
         b.close()
 
 
-def install(url, want_app, stage_dir, sha_file, log=print, reset_settings=False):
+def install(url, want_app, stage_dir, sha_file, log=print, reset_settings=False, keep_always=()):
     """패키지를 내려받아 stage_dir 에 풀고 검증한다. 커밋은 부른 쪽(webota)이 한다.
     want_app 이 있으면 매니페스트 app_id 가 같아야 한다(앱 교체는 None 으로 부른다).
     반환 (ok, 메시지, 매니페스트, 바뀐 경로 목록). 바뀌지 않은 파일은 스테이징하지 않는다."""
@@ -314,7 +314,7 @@ def install(url, want_app, stage_dir, sha_file, log=print, reset_settings=False)
             path, size, sha = f["path"], int(f["size"]), f["sha"].lower()
             # 설정 기본값은 기기에 이미 있으면 건드리지 않는다(운영자가 바꾼 값을 지키려고).
             same = sha_file(path) == sha or (f.get("kind") == "setting" and wb.exists(path)
-                                             and not reset_settings)   # 설정 초기화면 기본값으로
+                                             and (not reset_settings or path in keep_always))
             h = hashlib.sha256()
             out = None
             if not same:
