@@ -101,6 +101,14 @@ def serve_dir(d):
     return srv.server_address[1]
 
 
+def _all_under(root, dirs):
+    out = []
+    for d in dirs:
+        for dp, _dn, fn in os.walk(root + d):
+            out += [dp[len(root):] + "/" + n for n in fn]
+    return out
+
+
 def free_port():
     s = socket.socket()
     s.bind(("127.0.0.1", 0))
@@ -271,7 +279,8 @@ def main():
     with open(os.path.join(src, "app.py"), "w") as f:
         f.write("V = 20\n")
     files, _ = cl.map_files(project)
-    man = cl.build_package(files, os.path.join(pk, "t.wpk"), "testapp", "2.0.0", "v2.0.0+test")
+    man = cl.build_package(files, os.path.join(pk, "t.wpk"), "testapp", "2.0.0", "v2.0.0+test",
+                           data=["/data"])
     check("pack — 매니페스트", cl.read_manifest(os.path.join(pk, "t.wpk"))["label"] == "v2.0.0+test"
           and len(man["files"]) == len(files))
     bad = bytearray(open(os.path.join(pk, "t.wpk"), "rb").read())
@@ -440,9 +449,92 @@ def main():
     check("롤백 — 지운 코드 파일 복원 · installed 원래대로", wb.exists("/stray2.py") and
           wb.read_json("/webota/installed.json")["settings"] == ["/config.json"])
 
+    print("== 선언은 앱 패키지만 · 선언이 없으면 전부 정리 · 설치 계획")
+    check("기기 설정에는 data_dirs 가 없다", "data_dirs" not in webota.DEFAULTS)
+    wb.confirm()
+    # 지금 판을 p3(데이터 /data·/logs, 설정 /config.json·/etc 선언)로 맞춘다
+    wr("/etc/net.json", "{}")
+    n0 = len(resets)
+    api.pkg_install(base_url + "/p3.wpk", wait=False, log=lambda *_: None)
+    wait_resets(resets, n0 + 1); wb.apply(); wb.confirm()
+    wr("/left.py", "z"); wr("/data/legacy.json", "{}")
+    legacy = os.path.join(pk, "legacy.wpk")
+    cl.build_package({"/app.py": os.path.join(p3, "app.py")}, legacy, "testapp", "0.9", "v0.9")
+    raw = open(legacy, "rb").read()
+    n = int(raw[5:raw.index(b"\n", 5)])
+    off = raw.index(b"\n", 5) + 1
+    m = json.loads(raw[off:off + n]); m.pop("settings"); m.pop("data")
+    mj = json.dumps(m).encode()
+    open(legacy, "wb").write(b"WPK1\n" + str(len(mj)).encode() + b"\n" + mj + raw[off + n:])
+    pl = api.pkg_plan(base_url + "/legacy.wpk")
+    check("계획 — 선언 없음 표시", pl["declared"] is False and pl["keep_data"] == ["/webota"], pl["keep_data"])
+    check("계획 — 지울 것에 코드·설정·데이터 전부", "/left.py" in pl["delete"] and "/data/legacy.json" in pl["delete"]
+          and "/config.json" in pl["delete"] and "/www/i.html" in pl["delete"], pl["delete"])
+    check("계획 — 지금 설정·데이터가 지워지는 것 표시", "/data/legacy.json" in pl["delete_kept_now"]
+          and "/config.json" in pl["delete_kept_now"] and "/left.py" not in pl["delete_kept_now"])
+    check("계획 — webota 자신·기기 설정은 안 지움", not any(x in pl["delete"] for x in
+          ("/boot.py", "/main.py", "/webota.py", "/webota.json")) and not any(x.startswith("/webota/") for x in pl["delete"]))
+    check("계획만 — 아무것도 안 바뀜", wb.exists("/left.py") and not wb.exists("/webota/pending.json"))
+    n0 = len(resets)
+    api.pkg_install(base_url + "/legacy.wpk", wait=False, log=lambda *_: None)
+    wait_resets(resets, n0 + 1); wb.apply()
+    check("선언 없는 패키지 — webota 말고 전부 정리", not wb.exists("/left.py") and not wb.exists("/data/legacy.json")
+          and not wb.exists("/config.json") and not wb.exists("/etc/net.json") and wb.exists("/app.py")
+          and wb.exists("/webota.json") and wb.exists("/boot.py"))
+    wb.apply(); wb.apply(); wb.apply()
+    check("롤백 — 정리된 데이터·설정도 복원", wb.exists("/data/legacy.json") and wb.exists("/config.json")
+          and wb.exists("/left.py"))
+    # 새 판이 데이터를 /store 로 옮겨 선언 — 이전 판의 /data 는 선언이 없으므로 정리 대상
+    wr("/store/s.json", "{}")
+    cl.build_package(files3, os.path.join(pk, "p4.wpk"), "testapp", "4.0.0", "v4.0.0",
+                     settings=["/config.json"], data=["/store"])
+    pl = api.pkg_plan(base_url + "/p4.wpk")
+    check("계획 — 이전 판 데이터는 정리 대상(★표시)", "/data/legacy.json" in pl["delete_kept_now"]
+          and "/store/s.json" not in pl["delete"], pl)
+    n0 = len(resets)
+    api.pkg_install(base_url + "/p4.wpk", wait=False, log=lambda *_: None)
+    wait_resets(resets, n0 + 1); wb.apply()
+    check("새 선언만 보존", wb.exists("/store/s.json") and wb.exists("/config.json") and not wb.exists("/data/legacy.json"))
+    st = api.status()["keep"]
+    check("보존 목록 = 새 판 선언만", st["data"] == ["/webota", "/store"] and st["settings"] == ["/webota.json", "/config.json"], st)
+    wb.confirm()
+
+    print("== 설정 · 데이터 강제 초기화")
+    # 지금 판을 p3(설정 /config.json·/etc, 데이터 /data·/logs)로 되돌리고 운영 중 상태를 만든다
+    open(os.path.join(p3, "config.json"), "w").write('{"a": 1}')
+    cl.build_package(files3, os.path.join(pk, "p3.wpk"), "testapp", "3.0.0", "v3.0.0",
+                     settings=["/config.json", "/etc"], data=["/data", "/logs"])
+    n0 = len(resets)
+    api.pkg_install(base_url + "/p3.wpk", wait=False, log=lambda *_: None)
+    wait_resets(resets, n0 + 1); wb.apply(); wb.confirm()
+    wr("/config.json", '{"a": 9}'); wr("/etc/net.json", "{}"); wr("/data/m.dat", "1 2 3"); wr("/logs/l.txt", "log")
+    pl = api.pkg_plan(base_url + "/p3.wpk", reset_settings=True)
+    check("계획 — 설정 초기화: 기본값 다시 쓰기 · 기본값 없는 설정 삭제", "/config.json" in pl["write"]
+          and pl["delete_reset"] == ["/etc/net.json"] and "/webota.json" not in pl["delete"], pl)
+    check("계획 — 설정 초기화는 데이터 안 건드림", not any(x.startswith(("/data/", "/logs/")) for x in pl["delete"]))
+    n0 = len(resets)
+    api.pkg_install(base_url + "/p3.wpk", reset_settings=True, wait=False, log=lambda *_: None)
+    wait_resets(resets, n0 + 1); wb.apply()
+    check("설정 초기화 — 기본값으로 · 나머지 설정 삭제", rd("/config.json") == b'{"a": 1}' and not wb.exists("/etc/net.json"))
+    check("설정 초기화 — webota 설정(토큰)·데이터 유지", wb.read_json("/webota.json").get("token") == "t0k"
+          and wb.exists("/data/m.dat") and wb.exists("/logs/l.txt"))
+    wb.confirm()
+    pl = api.pkg_plan(base_url + "/p3.wpk", reset_data=True)
+    check("계획 — 데이터 초기화: 선언된 데이터 전부(/webota 제외)", sorted(pl["delete_reset"]) ==
+          sorted(e for e in _all_under(root, ("/data", "/logs"))) and not any(x.startswith("/webota") for x in pl["delete"]), pl["delete_reset"])
+    n0 = len(resets)
+    r = api.pkg_install(base_url + "/p3.wpk", reset_data=True, wait=False, log=lambda *_: None)
+    check("같은 판 + 데이터 초기화 → 커밋(초기화만)", r == "committed" and wait_resets(resets, n0 + 1))
+    wb.apply()
+    check("데이터 초기화 — 데이터 비움 · 코드·설정 유지", not wb.exists("/data/m.dat") and not wb.exists("/logs/l.txt")
+          and wb.exists("/app.py") and wb.exists("/config.json"))
+    wb.apply(); wb.apply(); wb.apply()
+    check("데이터 초기화 롤백 — 데이터 복원", wb.exists("/data/m.dat") and rd("/logs/l.txt") == b"log")
+
     print("== CLI")
     base = ["--host", "127.0.0.1:%d" % port, "--token", "t0k", "-y"]
     check("cli ls", cl.main(base + ["ls", "/data"]) == 0)
+    wr("/data/q.bak", "1"); wr("/data/r.bak", "2"); wr("/data/keep.json", "{}")
     check("cli rm 글롭", cl.main(base + ["rm", "/data/*.bak"]) == 0
           and not wb.exists("/data/q.bak") and wb.exists("/data/keep.json"))
     with open(os.path.join(src, cl.PROJECT_FILE), "w") as f:
