@@ -18,5 +18,12 @@
     {
       "github": "owner/repo"
     }
+  ],
+  "pkg_keys": [
+    {
+      "id": "<device-config 가 넣는다>",
+      "n": "<공개키 모듈러스>",
+      "e": 65537
+    }
   ]
 }
