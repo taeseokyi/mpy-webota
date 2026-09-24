@@ -41,7 +41,7 @@ import time
 
 import webota_boot as wb
 
-VERSION = "0.5.3"
+VERSION = "0.5.4"
 CONFIG = "/webota.json"
 DEFAULTS = {"port": 8266, "app": "app", "entry": "main", "wifi_file": None,
             "wifi_keys": ["ssid", "pass"], "wifi_timeout_s": 20, "confirm_s": 90,
@@ -387,7 +387,8 @@ def keep_lists(extra=None):
     if extra:
         settings += list(extra.get("settings") or [])
         data += list(extra.get("data") or [])
-    return settings, data
+    uniq = lambda xs: [x for i, x in enumerate(xs) if x not in xs[:i]]   # 기기·패키지 선언이 겹친다
+    return uniq(settings), uniq(data)
 
 
 def kind_of(path, extra=None):
