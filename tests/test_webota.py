@@ -707,6 +707,22 @@ def main():
     check("화면 — 진짜 폼(action /login · username · current-password)", b'action="/login"' in ui
           and b'autocomplete="username"' in ui and b'autocomplete="current-password"' in ui)
 
+    print("== 빈 예비 연결(크롬)이 뒤의 요청을 막지 않는다")
+    idle = socket.create_connection(("127.0.0.1", port), 2)          # 아무것도 보내지 않는다
+    time.sleep(0.2)
+    t0 = time.time()
+    st = api.status()
+    took = time.time() - t0
+    idle.settimeout(5)
+    try:
+        leftover = idle.recv(100)
+    except OSError:
+        leftover = b"?"
+    idle.close()
+    check("빈 연결 뒤 요청도 응답(헤더 대기 %ds 안)" % webota.HEAD_TIMEOUT_S, st["webota"] == webota.VERSION
+          and took < webota.HEAD_TIMEOUT_S + 2, took)
+    check("빈 연결에는 500 을 보내지 않고 닫는다", leftover == b"", leftover[:60])
+
     print("== CLI")
     base = ["--host", "127.0.0.1:%d" % port, "--token", "t0k", "-y"]
     check("cli ls", cl.main(base + ["ls", "/data"]) == 0)
