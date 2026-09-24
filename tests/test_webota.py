@@ -506,6 +506,28 @@ def main():
     check("device-config — 공개키 · 토큰 없으면 github_token 안 넣음", dc["pkg_keys"] == [rec]
           and "github_token" not in dc and dc["token"] == "T" * 32 and dc["hostname"] == "myapp")
 
+    print("== 다른 사람 기기: 프로젝트 파일의 공개키 · usb-install · publish")
+    projdir = os.path.join(local, "proj")
+    os.makedirs(projdir)
+    pf = os.path.join(projdir, cl.PROJECT_FILE)
+    json.dump({"app_id": "myapp", "device": {"sources": [{"github": "me/myapp"}]}}, open(pf, "w"))
+    keys = cl.publish_key(pf, rec)
+    check("publish — 프로젝트 파일에 공개키", json.load(open(pf))["device"]["pkg_keys"] == [rec] and keys == [rec])
+    cl.publish_key(pf, rec)
+    check("publish 두 번 — 같은 id 는 하나", len(json.load(open(pf))["device"]["pkg_keys"]) == 1)
+    proj = cl.find_project(projdir)
+    check("project_keys — 개인키 없이 프로젝트의 공개키", cl.project_keys(proj) == [rec])
+    proj["webota_device_dir"] = os.path.relpath(DEV, projdir)
+    logs = []
+    rc = cl.usb_install("COM9", proj, "U" * 32, dry_run=True, log=logs.append)
+    cmdline = logs[-1]
+    check("usb-install --dry-run — webota 9개 + 설정 + reset", rc == 0 and all(n in cmdline for n in cl.DEVICE_FILES)
+          and ":webota.json" in cmdline and cmdline.rstrip().endswith("reset") and "app.py" not in cmdline, cmdline)
+    check("usb-install 안내 — 공개키·출처·앱", rec["id"] in logs[0] and "me/myapp" in logs[0] and "myapp" in logs[0], logs[0])
+    proj["webota_device_dir"] = "없는곳"
+    check("usb-install — 기기 파일 없으면 거부", raises(lambda: cl.usb_install("COM9", proj, "U" * 32, dry_run=True,
+                                                                          log=lambda *_: None), "기기 파일이 없다"))
+
     webota._stop = True
     shutil.rmtree(root, ignore_errors=True)
     shutil.rmtree(local, ignore_errors=True)

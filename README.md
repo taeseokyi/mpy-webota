@@ -73,6 +73,28 @@ mpremote fs cp device/*.py device/webota_ca.pem device/webota_ui.html webota.jso
 ```
 설정 파일을 넣지 않으면 기기가 첫 부팅 때 기본값을 만들고 설정용 AP를 올립니다. 그때는 휴대폰으로 등록과 WiFi를 설정합니다. 다만 **공개키가 없으면 설치가 막히므로**, 공개키는 결국 USB로 넣어야 합니다.
 
+## 다른 사람 기기에 설치하기 (내 패키지를 믿는 기기)
+**공개키는 공개해도 되는 정보입니다.** 내 공개키를 심은 기기는 **내가 서명한 패키지만** 설치합니다. 다른 사람에게 개인키나 토큰을 줄 필요가 없습니다.
+
+**패키지 작성자(나)가 한 번 할 일**
+```bash
+python3 client/webota.py signing-key publish     # 앱 저장소의 webota.project.json 에 device.pkg_keys 로 넣는다
+git commit -am "공개키 공개" && git push           # 저장소에 공개키가 들어간다
+```
+
+**설치하는 사람이 할 일** (USB 한 번, 자기 PC에서)
+```bash
+git clone https://github.com/<나>/<앱>            # 앱 저장소(webota 기기 파일이 vendored 돼 있다)
+cd <앱>
+python3 tools/webota.py usb-install --port COM5   # webota + 기기 설정(내 공개키·출처·그 사람의 토큰)만 올린다
+```
+- **앱은 USB로 올리지 않습니다.** 기기가 부팅하면 설치 화면 `http://<기기>:8266/`에서 판을 골라 설치합니다. 첫 설치가 그 앱을 받아들입니다.
+- WiFi는 설정용 AP(`webota-XXXX`)에 붙어 설정 화면에서 정합니다.
+- **기기 토큰은 설치한 사람의 것입니다.** 그 사람의 PC에서 새로 만들어지므로(`~/.config/webota/…token`), 그 기기의 설치 화면은 그 사람만 씁니다. 토큰 칸에서 '저장'하면 크롬에 저장됩니다.
+- 설치한 사람은 패키지를 **만들 수 없습니다.** 개인키가 없기 때문입니다. 자기 키도 함께 믿게 하려면 `device.pkg_keys`에 자기 공개키를 더해 `usb-install`하면 됩니다. 공개키는 여러 개를 둘 수 있습니다.
+- ★그 기기는 **내 키를 믿게 됩니다.** 내가 서명한 것이면 무엇이든 설치될 수 있으니, 설치하는 사람이 나를 믿는다는 전제입니다.
+- mpremote가 필요합니다(`pip install mpremote`). 윈도에서는 `py tools\webota.py usb-install --port COM5`로 실행합니다.
+
 ## 판 만들기와 릴리스 (서명)
 ```bash
 python3 client/webota.py pack --app-id myapp --version 1.2.0 --out dist/   # 서명 암호를 묻는다
@@ -85,7 +107,7 @@ gh release create v1.2.0 dist/myapp-v1.2.0.wpk
 webota.py status | history | sources | pkg-list [--fresh]
 webota.py pkg-install <URL> [--switch-app] [--reset-settings] [--reset-data]   # 계획을 먼저 보여 준다
 webota.py clean [-y]
-webota.py signing-key init|show · pack · device-config · token · claim
+webota.py signing-key init|show|publish · pack · device-config · usb-install --port COMx · token · claim
 ```
 
 ## HTTP API
