@@ -114,6 +114,62 @@ def serve_dir(d):
     return srv.server_address[1]
 
 
+def fake_github():
+    """가짜 GitHub(OAuth 기기 흐름) — 첫 poll 은 pending, 다음은 GH['login'] 의 토큰(GH['mode']='deny' 면 거부).
+    /user 는 Bearer 토큰으로 누구인지 돌려준다(토큰이 실제로 실려 왔는지도 본다)."""
+    import http.server
+    import threading
+    import urllib.parse
+    GH = {"login": "owner1", "mode": "ok", "polls": {}, "seen_tokens": [], "n": 0}
+
+    class H(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def _j(self, obj, code=200):
+            b = json.dumps(obj).encode()
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(b)))
+            self.end_headers()
+            self.wfile.write(b)
+
+        def do_POST(self):
+            f = dict(urllib.parse.parse_qsl(self.rfile.read(int(self.headers.get("Content-Length") or 0)).decode()))
+            if f.get("client_id") != "Iv1.test":
+                return self._j({"error": "incorrect_client_credentials"})
+            if self.path == "/login/device/code":
+                GH["n"] += 1
+                dc = "DC%d" % GH["n"]
+                GH["polls"][dc] = 0
+                return self._j({"device_code": dc, "user_code": "ABCD-%04d" % GH["n"], "interval": 0,
+                                "verification_uri": "https://github.com/login/device", "expires_in": 900})
+            if self.path == "/login/oauth/access_token":
+                dc = f.get("device_code")
+                if dc not in GH["polls"] or f.get("grant_type") != "urn:ietf:params:oauth:grant-type:device_code":
+                    return self._j({"error": "bad_verification_code"})
+                GH["polls"][dc] += 1
+                if GH["polls"][dc] == 1:
+                    return self._j({"error": "authorization_pending"})
+                if GH["mode"] == "deny":
+                    return self._j({"error": "access_denied", "error_description": "사용자가 거부"})
+                return self._j({"access_token": "gho_" + GH["login"], "token_type": "bearer", "scope": ""})
+            self._j({"error": "not_found"}, 404)
+
+        def do_GET(self):
+            if self.path == "/user":
+                a = self.headers.get("Authorization") or ""
+                GH["seen_tokens"].append(a)
+                if not a.startswith("Bearer gho_"):
+                    return self._j({"message": "Requires authentication"}, 401)
+                return self._j({"login": a[len("Bearer gho_"):], "id": 1})
+            self._j({"message": "Not Found"}, 404)
+
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return "http://127.0.0.1:%d" % srv.server_address[1], GH
+
+
 def free_port():
     s = socket.socket()
     s.bind(("127.0.0.1", 0))
@@ -200,7 +256,8 @@ def main():
     check("GitHub 토큰 문자열 없음", not any("ghp_SECRET" in b for b in blobs))
     check("기기 토큰 문자열 없음", not any('"t0k"' in b for b in blobs))
     sec = api.status()["security"]
-    check("status.security — 있다/없다만", sec == {"pkg_keys": [rec["id"]], "github_token": True, "ca": False}, sec)
+    check("status.security — 있다/없다만", sec == {"pkg_keys": [rec["id"]], "github_token": True, "ca": False,
+                                                   "github_auth": None}, sec)
 
     print("== 서명 검증(webota_sig) — openssl 과 맞물림")
     msg = b"hello manifest"
@@ -361,6 +418,84 @@ def main():
     check("앱 없는 기기의 첫 설치 → 그 앱을 받아들임", wb.read_json("/webota.json").get("app_id") == "freshapp")
     confirm()
 
+    print("== ★GitHub 확인 — 기기를 바꾸는 작업마다 허용 계정의 승인(1.2.0)")
+    import webota_auth as au
+    check("설정 없는 기기 — /auth/start 404", raises(lambda: api._req("POST", "/auth/start",
+                                                                   body={"action": "install", "body": {}}), "404"))
+    ghb, GH = fake_github()
+    webota.cfg["github_auth"] = {"client_id": "Iv1.test", "owners": ["Owner1"], "web": ghb, "api": ghb}
+    check("status.security.github_auth — 허용 계정", api.status()["security"]["github_auth"] == ["Owner1"])
+    fg = dict(f4, **{"/app.py": srcfile("appg.py", "V = 'g'\n")})
+    ug = pack("freshapp-g.wpk", fg, app_id="freshapp", version="1.1.0", data=["/data"])
+    ug2 = pack("freshapp-g2.wpk", dict(fg, **{"/app.py": srcfile("appg2.py", "V = 'g2'\n")}),
+               app_id="freshapp", version="1.2.0", data=["/data"])
+    check("승인 없이 설치 → 403 auth_required", raises(lambda: api._req("POST", "/pkg/install", body={"url": ug}),
+                                                     "GitHub 확인이 필요"))
+    check("가짜 auth_id → 403", raises(lambda: api._req("POST", "/pkg/install", body={"url": ug, "auth_id": "x"}), "403"))
+    check("보기(plan · list · orphans)는 승인 없이", api.pkg_plan(ug)["ok"] and api.pkg_list()["ok"] is not None
+          and api.orphans() is not None)
+    logs = []
+    n0 = len(resets)
+    r = api.pkg_install(ug, wait=False, log=logs.append)
+    check("클라이언트 — 코드 안내 → pending → 승인 → 설치", r == "committed"
+          and any("ABCD-" in x and "github.com/login/device" in x for x in logs)
+          and any("승인 — owner1" in x for x in logs), logs)
+    wait_resets(resets, n0 + 1)
+    wb.apply()
+    check("승인된 설치 적용", rd("/app.py") == b"V = 'g'\n")
+    confirm()
+    check("/user 에 GitHub 토큰을 실어 보냄(대소문자 무관 계정 비교)", GH["seen_tokens"][-1] == "Bearer gho_owner1")
+
+    def approve(action, body):
+        st = api._req("POST", "/auth/start", body={"action": action, "body": body})[1]
+        for _ in range(5):
+            p = api._req("POST", "/auth/poll", body={"auth_id": st["auth_id"]})[1]
+            if p["state"] != "pending":
+                return st, p
+            time.sleep(0.05)
+        return st, p
+    body = {"url": ug2}
+    st, p = approve("install", body)
+    check("/auth/start 응답에 device_code 없음", "device_code" not in st and st.get("user_code", "").startswith("ABCD-"), st)
+    check("다른 작업 내용(url)으로 바꿔치기 → 거부",
+          raises(lambda: api._req("POST", "/pkg/install", body={"url": ug, "auth_id": st["auth_id"]}), "다른 작업"))
+    st, p = approve("install", body)
+    check("초기화 옵션을 더해도 거부(내용에 묶임)",
+          raises(lambda: api._req("POST", "/pkg/install", body=dict(body, reset_data=True, auth_id=st["auth_id"])), "다른 작업"))
+    st, p = approve("install", body)
+    au.APPROVED_TTL_S, ttl = -1, au.APPROVED_TTL_S
+    check("승인 뒤 오래되면 거부", raises(lambda: api._req("POST", "/pkg/install", body=dict(body, auth_id=st["auth_id"])),
+                                   "오래됐다"))
+    au.APPROVED_TTL_S = ttl
+    st, p = approve("install", body)
+    n0 = len(resets)
+    ok1 = api._req("POST", "/pkg/install", body=dict(body, auth_id=st["auth_id"]), timeout=60)[1]["result"] == "committed"
+    wait_resets(resets, n0 + 1)
+    wb.apply()
+    confirm()
+    check("같은 승인 한 번 설치 → 두 번째는 거부(한 번만)", ok1 and raises(
+        lambda: api._req("POST", "/pkg/install", body=dict(body, auth_id=st["auth_id"])), "403"))
+    GH["login"] = "stranger"
+    st, p = approve("install", body)
+    check("허용되지 않은 계정의 승인 → denied", p["state"] == "denied" and "stranger" in p["err"], p)
+    check("클라이언트 — 다른 계정이면 설치하지 않음", raises(lambda: api.pkg_install(ug, wait=False, log=lambda *_: None),
+                                                     "허용되지 않은"))
+    GH["login"], GH["mode"] = "owner1", "deny"
+    st, p = approve("install", body)
+    check("GitHub 에서 거부 → denied", p["state"] == "denied", p)
+    GH["mode"] = "ok"
+    wr("/extra2.py", "e")
+    check("정리도 승인 필요", raises(lambda: api._req("POST", "/pkg/clean", body={"paths": ["/extra2.py"]}), "GitHub 확인"))
+    check("클라이언트 정리 — 승인 받고 지움", api.clean(["/extra2.py"], log=lambda *_: None)["deleted"] == ["/extra2.py"])
+    check("공유기 쪽 WiFi 변경도 승인 필요", raises(lambda: api._req("POST", "/wifi", body={"ssid": "Evil", "pass": "x"}),
+                                              "GitHub 확인"))
+    st, p = approve("wifi", {"ssid": "Other"})
+    check("WiFi — 승인된 SSID 와 다르면 거부", raises(lambda: api._req("POST", "/wifi", body={"ssid": "Evil", "auth_id": st["auth_id"]}),
+                                                "다른 작업"))
+    check("GitHub 토큰은 어떤 응답에도 없음", "gho_" not in json.dumps(api.status()))
+    check("승인 요청 수 제한", all(len(au._pending) <= au.MAX_PENDING for _ in [approve("clean", {"paths": []}) for _ in range(10)]))
+    webota.cfg["sources"] = [{"index": base + "/index.json"}]
+
     print("== TLS: CA 없으면 연결하지 않는다 · GitHub 토큰은 GitHub 호스트에만")
     wb.remove("/webota_ca.pem")
     try:
@@ -451,7 +586,9 @@ def main():
     webota.cfg["wifi_timeout_s"] = 1
     check("부팅 — 접속 실패면 AP", net.boot(webota.cfg) is False and net.ap_active())
     r = anon._req("POST", "/wifi", body={"ssid": "HomeNet", "pass": "pw123"})[1]
-    check("AP 에서 토큰 없이 WiFi 저장", r["ok"] and wb.read_json("/webota.json")["wifi"]["ssid"] == "HomeNet")
+    check("AP 에서 토큰 없이 · GitHub 확인 없이 WiFi 저장", r["ok"] and wb.read_json("/webota.json")["wifi"]["ssid"] == "HomeNet"
+          and webota.cfg.get("github_auth"))
+    webota.cfg.pop("github_auth", None)
     net.tick(webota.cfg)                              # 재접속 시작
     net.tick(webota.cfg)                              # 붙은 뒤 틱 — NTP
     check("재접속 · 접속하면 NTP", net.is_connected() and len(ntp_calls) >= 1, ntp_calls)
@@ -505,6 +642,13 @@ def main():
     dc = cl.device_config({"app_id": "myapp", "device": {"hostname": "myapp"}}, "T" * 32, [rec], None)
     check("device-config — 공개키 · 토큰 없으면 github_token 안 넣음", dc["pkg_keys"] == [rec]
           and "github_token" not in dc and dc["token"] == "T" * 32 and dc["hostname"] == "myapp")
+    pga = {"app_id": "myapp", "device": {"github_auth": {"client_id": "Iv1.x", "owners": ["author"]}}}
+    check("device-config — 프로젝트의 github_auth 그대로", cl.device_config(pga, "T", [rec])["github_auth"]["owners"] == ["author"])
+    check("device-config --github-owner — 내 계정으로 바꿈(client_id 유지)",
+          cl.device_config(pga, "T", [rec], github_owners=["me"])["github_auth"] == {"client_id": "Iv1.x", "owners": ["me"]})
+    check("device-config --no-github-auth — 뺌", "github_auth" not in cl.device_config(pga, "T", [rec], github_owners=[]))
+    check("--github-owner 인데 client_id 없음 → 거부",
+          raises(lambda: cl.device_config({"device": {}}, "T", [rec], github_owners=["me"]), "client_id"))
 
     print("== 다른 사람 기기: 프로젝트 파일의 공개키 · usb-install · publish")
     projdir = os.path.join(local, "proj")
@@ -521,7 +665,7 @@ def main():
     logs = []
     rc = cl.usb_install("COM9", proj, "U" * 32, dry_run=True, log=logs.append)
     cmdline = logs[-1]
-    check("usb-install --dry-run — webota 9개 + 설정 + reset", rc == 0 and all(n in cmdline for n in cl.DEVICE_FILES)
+    check("usb-install --dry-run — webota 10개 + 설정 + reset", rc == 0 and all(n in cmdline for n in cl.DEVICE_FILES)
           and ":webota.json" in cmdline and cmdline.rstrip().endswith("reset") and "app.py" not in cmdline, cmdline)
     check("usb-install 안내 — 공개키·출처·앱", rec["id"] in logs[0] and "me/myapp" in logs[0] and "myapp" in logs[0], logs[0])
     proj["webota_device_dir"] = "없는곳"

@@ -18,6 +18,7 @@ MicroPython 앱을 위한 **서명된 배포 패키지 설치 모듈**입니다.
 | **출처는 USB로 정한 것만** | 웹에서 아무 저장소나 더할 수 없습니다. |
 | **TLS 인증서 검증** (`/webota_ca.pem`) | 가짜 GitHub 서버를 막습니다. CA 묶음이 없으면 연결하지 않습니다. |
 | **`/webota.json`은 패키지가 못 건드림** | 공개키와 토큰을 바꾸려는 패키지는 서명이 맞아도 거부합니다. |
+| **GitHub 확인** (1.2.0, `github_auth` — USB로만) | 기기 토큰이 새도 기기를 바꿀 수 없습니다. 아래 절을 보십시오. |
 
 **지켜야 할 것은 PC의 서명 개인키입니다** (`~/.config/webota/signing-key.pem`).
 - 기본으로 **암호가 걸린 키**를 만들고, 서명할 때마다 암호를 묻습니다. 암호는 webota가 직접 두 번 받아 확인하고, openssl에는 환경변수로만 넘깁니다. 무인 빌드는 `WEBOTA_SIGN_PASS` 환경변수로 할 수 있지만 권하지 않습니다.
@@ -29,6 +30,29 @@ MicroPython 앱을 위한 **서명된 배포 패키지 설치 모듈**입니다.
 - 공개 저장소라면 토큰이 필요 없습니다. 토큰 없는 요청 한도(시간당 60회)로 충분합니다.
 - 무결성은 토큰이 아니라 서명이 지킵니다.
 - 비공개 저장소가 꼭 필요하다면 **읽기 전용, 저장소 하나, 짧은 만료**로 발급합니다. `device-config --github-token-file`로 USB에서만 심고, 기기는 `api.github.com`과 `github.com`에만 보냅니다.
+
+## GitHub 확인 — 작업마다 승인 (1.2.0)
+기기 토큰만으로는 **서명된 옛 판으로 되돌리기, 설정·데이터 초기화, WiFi를 다른 망으로 바꾸기**가 됩니다. 코드 주입은 서명이 막지만 이것들은 막지 못합니다. 그래서 `github_auth`가 설정된 기기는 **기기를 바꾸는 모든 작업**에 허용된 GitHub 계정의 승인을 **매번** 받습니다.
+
+| 작업 | 필요한 것 |
+|---|---|
+| 패키지 설치(되돌리기, 앱 교체, 초기화 포함), 수동 정리, 공유기 쪽 WiFi 변경 | 기기 토큰 **+ GitHub 승인** |
+| 상태, 이력, 목록, 계획, 남은 파일 보기 | 기기 토큰 |
+| 설정용 AP에서 WiFi 설정, 기기 등록 | AP 비밀번호(예전과 같음) |
+
+**흐름** (GitHub OAuth Device Flow):
+1. 설치 화면이나 CLI에서 작업을 누르면, 기기가 `github.com`에 확인 코드(`ABCD-1234`)를 받아 보여 줍니다.
+2. 사람이 `https://github.com/login/device`에서 코드를 넣고 승인합니다. 평소의 GitHub 로그인과 2단계 인증이 그대로 쓰입니다.
+3. 기기가 받은 토큰으로 `api.github.com/user`에 **누가 승인했는지**만 묻습니다. `owners`에 있으면 승인하고 토큰은 버립니다. 토큰은 권한 범위(scope)를 요청하지 않으므로 계정 이름을 읽는 것밖에 못 합니다.
+4. 승인은 **그 작업 하나**에만 쓰입니다. 작업 내용(url, 초기화 선택, 지울 파일, SSID)에 묶이고, 한 번 쓰면 없어지며, 승인 뒤 3분 안에 써야 합니다.
+
+**설정** (USB로만, 프로젝트 파일 `device` 절 또는 `device-config`):
+```json
+"github_auth": {"client_id": "<OAuth App Client ID>", "owners": ["my-github-login"]}
+```
+- `client_id`: GitHub → Settings → Developer settings → **OAuth Apps** → New OAuth App에서 만들고 **Enable Device Flow**를 켭니다. Homepage/Callback URL은 아무 주소나 됩니다. Client ID는 공개 정보이고, Client Secret은 쓰지 않습니다.
+- 다른 사람 기기: `usb-install --github-owner <그 사람의 계정>`으로 승인할 계정을 바꿉니다(같은 client_id를 씁니다). `--no-github-auth`는 확인을 끕니다.
+- ★기기가 GitHub에 닿아야 작업할 수 있습니다. 인터넷이 끊기면 USB로 합니다.
 
 ## 원격으로 할 수 있는 것 (설치 화면 `:8266/`, 기기 토큰 필요)
 - **패키지 설치**: 출처의 판 목록에서 고르면 먼저 **설치 계획**을 보여 줍니다. 계획에는 서명 키, 쓸 파일, 지울 파일, 보존할 경로가 나옵니다. 그다음 설치, 재부팅, 시험, 확인 또는 롤백을 거칩니다.
@@ -56,6 +80,7 @@ MicroPython 앱을 위한 **서명된 배포 패키지 설치 모듈**입니다.
 | `device/webota.py` | 설치 서버(:8266) · 설치 · 정리 · 등록 · 로그인 |
 | `device/webota_pkg.py` | 목록 · 내려받기(검증된 TLS) · 패키지 풀기 |
 | `device/webota_sig.py` | 서명 검증(순수 파이썬 RSA — 실기에서 47ms) |
+| `device/webota_auth.py` | GitHub 확인(OAuth Device Flow) — 작업마다 승인 |
 | `device/webota_boot.py` | 부팅 때 적용 · 롤백 · 확인 |
 | `device/webota_net.py` | WiFi · 설정용 AP · NTP(인증서 유효 기간 확인용) |
 | `device/webota_ca.pem` | GitHub용 루트 CA(USERTrust ECC, Sectigo E46, ISRG X1/X2, DigiCert G2) |
@@ -108,7 +133,9 @@ webota.py status | history | sources | pkg-list [--fresh]
 webota.py pkg-install <URL> [--switch-app] [--reset-settings] [--reset-data]   # 계획을 먼저 보여 준다
 webota.py clean [-y]
 webota.py signing-key init|show|publish · pack · device-config · usb-install --port COMx · token · claim
+# device-config · usb-install: [--github-owner LOGIN ...] [--no-github-auth]
 ```
+`pkg-install`과 `clean`은 기기가 GitHub 확인을 요구하면 코드를 보여 주고 승인을 기다립니다.
 
 ## HTTP API
 | 요청 | 설명 |
@@ -120,6 +147,7 @@ webota.py signing-key init|show|publish · pack · device-config · usb-install 
 | `GET /pkg/sources` · `GET /pkg/list` | 출처(보기만) · 패키지 목록 |
 | `POST /pkg/plan` · `POST /pkg/install` | 계획(서명 확인) · 설치 |
 | `GET /pkg/orphans` · `POST /pkg/clean` | 수동 정리 |
+| `POST /auth/start {action, body}` · `POST /auth/poll {auth_id}` | GitHub 확인. 승인된 `auth_id`를 install, clean, wifi 본문에 넣습니다. |
 
 ## 시험
 ```bash
