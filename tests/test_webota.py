@@ -324,6 +324,53 @@ def main():
     wb.apply()
     check("패키지 적용 → 수동 변경 해제", api.status()["modified"] is None and rd("/app.py") == b"V = 20\n")
 
+    print("== 출처(저장소) 관리 · 앱 교체")
+    check("sources — 옛 packages 한 개를 읽는다", api.pkg_sources() == [base_url + "/index.json"])
+    check("sources add — 저장소 URL", api.pkg_sources(add="https://github.com/foo/bar.git")[-1] == "foo/bar")
+    disk = wb.read_json("/webota.json")
+    check("sources — 설정 파일에 저장(토큰 유지)", disk.get("token") == "t0k" and
+          {"github": "foo/bar"} in disk.get("sources", []) and "packages" not in disk, disk)
+    check("sources default", api.pkg_sources(default="foo/bar")[0] == "foo/bar")
+    check("sources remove", api.pkg_sources(remove="foo/bar") == [base_url + "/index.json"])
+    check("sources add — 모르는 주소 거부", raises(lambda: api.pkg_sources(add="https://gitlab.com/a/b"), "400"))
+    check("pkg/list — src 지정", api.pkg_list(src=base_url + "/index.json")["src"] == base_url + "/index.json")
+    dev = os.path.join(HERE, "..", "device")
+    with_wo = dict(files)
+    for n in ("webota.py", "webota_boot.py", "main.py", "boot.py"):
+        with_wo["/" + n] = os.path.join(dev, n)
+    with open(os.path.join(src, "app.py"), "w") as f:
+        f.write("OTHER = 1\n")
+    files2, _ = cl.map_files(project)
+    with_wo.update(files2)
+    cl.build_package(with_wo, os.path.join(pk, "otherapp-v1.0.0.wpk"), "otherapp", "1.0.0", "v1.0.0+x",
+                     app="app", entry="main")
+    cl.build_package(files2, os.path.join(pk, "bare-v1.0.0.wpk"), "bareapp", "1.0.0")
+    with open(os.path.join(pk, "index.json"), "w") as f:
+        json.dump([{"tag": "v1.0.0", "name": "other", "url": base_url + "/otherapp-v1.0.0.wpk"}], f)
+    lst = api.pkg_list(fresh=True)
+    check("목록 — 파일 이름에서 app_id", lst["packages"][0]["app_id"] == "otherapp", lst["packages"])
+    e409 = None
+    try:
+        api._req("POST", "/pkg/install", body={"url": base_url + "/otherapp-v1.0.0.wpk"})
+    except cl.WebotaError as e:
+        e409 = str(e)
+    check("다른 앱 — 409 app_mismatch", e409 and "409" in e409, e409)
+    check("webota 없는 패키지로는 교체 거부", raises(lambda: api.pkg_install(
+        base_url + "/bare-v1.0.0.wpk", switch_app=True, wait=False, log=lambda *_: None), "webota 가 없다"))
+    n0 = len(resets)
+    r = api.pkg_install(base_url + "/otherapp-v1.0.0.wpk", switch_app=True, src=base_url + "/index.json",
+                        wait=False, log=lambda *_: None)
+    check("앱 교체 — 커밋", r == "committed" and wait_resets(resets, n0 + 1))
+    before = wb.read_json("/webota.json")
+    wb.apply()
+    after = wb.read_json("/webota.json")
+    check("앱 교체 — 설정도 같은 트랜잭션(app_id·token 유지)", after.get("app_id") == "otherapp"
+          and after.get("token") == "t0k" and after.get("app") == "app", after)
+    check("앱 교체 — 새 앱 코드", rd("/app.py") == b"OTHER = 1\n")
+    wb.apply(); wb.apply(); wb.apply()                     # 새 앱이 자리를 못 잡음 → 롤백
+    check("앱 교체 롤백 — 설정도 원래대로", wb.read_json("/webota.json") == before and
+          rd("/app.py") != b"OTHER = 1\n")
+
     print("== CLI")
     base = ["--host", "127.0.0.1:%d" % port, "--token", "t0k", "-y"]
     check("cli ls", cl.main(base + ["ls", "/data"]) == 0)

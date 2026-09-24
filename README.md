@@ -65,9 +65,16 @@ python3 client/webota.py --host 192.168.0.50 status
 - **올리기**: `gh release create v1.2.0 dist/myapp-v1.2.0.wpk`. 판마다 릴리스가 쌓입니다.
 - **기기 설정** `/webota.json`:
   ```json
-  {"app_id": "myapp", "packages": {"github": "owner/repo"}}
+  {"app_id": "myapp", "sources": [{"github": "owner/repo"}]}
   ```
-  `"asset": "*.wpk"`(기본값)와 `"max": 15`를 지정할 수 있습니다. 자체 호스팅은 `{"index": "http://.../index.json"}`(`[{tag,name,url,size,published}]`)으로 합니다.
+  출처는 여러 개를 둘 수 있고, 첫 항목이 기본입니다. 출처마다 `"asset": "*.wpk"`(기본값)와 `"max": 15`를 지정할 수 있습니다. 자체 호스팅은 `{"index": "http://.../index.json"}`(`[{tag,name,url,size,published}]`)으로 합니다. 옛 `"packages": {...}` 한 개짜리 설정도 읽습니다.
+- **출처 추가(설치 화면)**: `https://github.com/owner/repo`나 `owner/repo`를 넣고 '더하기'를 누릅니다. mpy-webota를 쓰는 **공개 저장소라면 어디든** 그 Releases의 `.wpk`가 목록에 뜹니다. 출처는 '빼기'와 '기본으로'로 관리합니다. CLI는 `webota.py sources --add owner/repo`입니다.
+- **앱 교체**: 목록의 `app_id`가 기기와 다르면 '설치' 대신 **'앱 교체'**가 뜹니다. 한 번 더 확인한 뒤 설치합니다.
+  - 새 `/webota.json`(`app_id`, `app`, `entry`, 출처 순서)이 **같은 트랜잭션**으로 들어갑니다. 그래서 새 앱이 90초를 못 버티면 코드와 설정이 함께 원래 앱으로 돌아갑니다.
+  - 토큰과 WiFi 설정은 그대로 두고, `/data`도 남습니다.
+  - webota 파일(`webota.py`, `webota_boot.py`, `main.py`, `boot.py`)이 없는 패키지로는 교체하지 않습니다. 교체한 뒤 원격 배포가 사라지기 때문입니다. CLI는 `pkg-install --switch-app`입니다.
+- **파일 이름 규약**: `<app_id>-v<판>….wpk`. 목록에서 앱을 알아보는 데 쓰고, 설치할 때는 매니페스트로 다시 확인합니다.
+- **예제**: [mpy-webota-demo](https://github.com/taeseokyi/mpy-webota-demo)는 mpy-webota를 쓰는 가장 작은 앱입니다. 새 프로젝트를 시작할 때 본보기로 씁니다.
 - **안전장치**:
   - `app_id`가 다른 패키지는 거부합니다.
   - 해시가 맞지 않으면 아무것도 바꾸지 않습니다.

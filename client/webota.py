@@ -35,7 +35,7 @@ import sys
 import time
 import urllib.parse
 
-VERSION = "0.3.0"
+VERSION = "0.5.0"
 DEFAULT_PORT = 8266
 PROJECT_FILE = "webota.project.json"
 # 잘못 바꾸면 원격으로 못 되돌리는 파일(USB 로만 복구) — 바꿀 때 한 번 더 묻는다.
@@ -64,9 +64,11 @@ PKG_MAGIC = b"WPK1\n"
 
 
 def build_package(files, out_path, app_id, version, label=None, name=None, delete=(),
-                  webota_version=None):
-    """files: {기기 경로: 로컬 경로} → .wpk. 매니페스트를 돌려준다."""
-    man = {"format": 1, "app_id": app_id, "name": name or app_id, "version": version,
+                  webota_version=None, app="app", entry="main"):
+    """files: {기기 경로: 로컬 경로} → .wpk. 매니페스트를 돌려준다. app·entry 는 앱 교체 때
+    기기 런처가 부를 모듈·함수(기본 app.main). 파일 이름 규약: <app_id>-v<판>….wpk"""
+    man = {"format": 1, "app_id": app_id, "app": app, "entry": entry,
+           "name": name or app_id, "version": version,
            "label": label or ("v" + version), "built_at": time.strftime("%Y-%m-%d %H:%M"),
            "webota": webota_version or VERSION, "delete": sorted(delete), "files": []}
     order = sorted(files)
@@ -157,13 +159,26 @@ class Client:
     def history(self, n=10):
         return self._req("GET", "/history", {"n": str(n)})[1]["history"]
 
-    def pkg_list(self, fresh=False):
-        return self._req("GET", "/pkg/list", {"fresh": "1"} if fresh else None)[1]
+    def pkg_sources(self, add=None, remove=None, default=None):
+        if add or remove or default:
+            body = {"add": add} if add else {"remove": remove} if remove else {"default": default}
+            return self._req("POST", "/pkg/sources", body=body)[1]["sources"]
+        return self._req("GET", "/pkg/sources")[1]["sources"]
 
-    def pkg_install(self, url, force=False, wait=True, log=print):
-        """기기가 url 의 패키지를 직접 내려받아 설치한다. 새 판 확인(또는 롤백)까지 기다린다."""
+    def pkg_list(self, fresh=False, src=None):
+        q = {}
+        if fresh:
+            q["fresh"] = "1"
+        if src:
+            q["src"] = src
+        return self._req("GET", "/pkg/list", q or None)[1]
+
+    def pkg_install(self, url, force=False, wait=True, log=print, switch_app=False, src=None):
+        """기기가 url 의 패키지를 직접 내려받아 설치한다. 새 판 확인(또는 롤백)까지 기다린다.
+        다른 앱의 패키지는 switch_app=True 여야 한다(앱 교체)."""
         st0 = self.status()
-        r = self._req("POST", "/pkg/install", body={"url": url, "force": force}, timeout=300)[1]
+        r = self._req("POST", "/pkg/install", body={"url": url, "force": force, "src": src,
+                                                    "switch_app": switch_app}, timeout=300)[1]
         if r.get("result") == "unchanged":
             log("  이미 이 판이다(%s) — 바뀐 파일 없음" % r.get("label"))
             return "unchanged"
@@ -426,8 +441,11 @@ def main(argv=None):
     s = sub.add_parser("pack", help="map 대로 배포 패키지(.wpk)를 만든다")
     s.add_argument("--app-id"); s.add_argument("--version"); s.add_argument("--label")
     s.add_argument("--name"); s.add_argument("--out", default="dist")
-    s = sub.add_parser("pkg-list"); s.add_argument("--fresh", action="store_true")
+    s = sub.add_parser("pkg-list"); s.add_argument("--fresh", action="store_true"); s.add_argument("--src")
     s = sub.add_parser("pkg-install"); s.add_argument("url"); s.add_argument("--force", action="store_true")
+    s.add_argument("--switch-app", action="store_true", help="다른 앱의 패키지로 기기를 교체"); s.add_argument("--src")
+    s = sub.add_parser("sources", help="기기의 패키지 출처(저장소) 목록 · 추가 · 삭제 · 기본")
+    s.add_argument("--add"); s.add_argument("--remove"); s.add_argument("--default")
     s = sub.add_parser("token", help="새 토큰을 만들어 토큰 파일에 저장")
     s.add_argument("--overwrite", action="store_true")
     a = ap.parse_args(argv)
@@ -506,17 +524,23 @@ def main(argv=None):
                 return 1
             c.deploy(files, dels, force=a.force, reset=not a.no_reset, dry_run=a.dry_run,
                      label=a.label or git_label(project.get("_root", ".")))
+        elif a.cmd == "sources":
+            for i, k in enumerate(c.pkg_sources(a.add, a.remove, a.default)):
+                print("%s %s" % ("*" if i == 0 else " ", k))
         elif a.cmd == "pkg-list":
-            r = c.pkg_list(a.fresh)
+            r = c.pkg_list(a.fresh, a.src)
             if r.get("err"):
                 print("! " + r["err"])
             cur = r.get("current") or ""
             for p in r.get("packages") or []:
                 mark = "*" if cur == p.get("tag") or cur.startswith((p.get("tag") or "") + "+") else " "
-                print("%s %-22s %-17s %7s  %s" % (mark, p.get("name") or p.get("tag"), p.get("published", ""),
-                                                  "%dK" % ((p.get("size") or 0) // 1024), p.get("url")))
+                other = p.get("app_id") and r.get("app_id") and p["app_id"] != r["app_id"]
+                print("%s %-22s %-18s %-17s %7s  %s" % (mark, p.get("name") or p.get("tag"),
+                                                        ("[다른 앱] " if other else "") + (p.get("app_id") or "?"),
+                                                        p.get("published", ""),
+                                                        "%dK" % ((p.get("size") or 0) // 1024), p.get("url")))
         elif a.cmd == "pkg-install":
-            c.pkg_install(a.url, force=a.force)
+            c.pkg_install(a.url, force=a.force, switch_app=a.switch_app, src=a.src)
         elif a.cmd == "history":
             for e in c.history(a.n):
                 print("%s  %-11s %-24s %s%s" % (e.get("at", ""), e.get("result", ""),
