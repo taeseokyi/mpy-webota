@@ -1,5 +1,8 @@
-# main.py — webota 범용 런처. 앱 코드는 여기 두지 않는다(/webota.json 의 "app" 모듈).
-#   WiFi 최소 접속 → OTA 서버(:8266) → 앱 실행. 앱이 죽어도 OTA 는 살아 있다.
+# main.py — webota 런처. ★webota 의 파일이다 — 앱은 이 파일을 갖지 않는다(원본 그대로 쓴다).
+#   부팅 분기(무엇을 띄울지)는 webota 가 정한다: /webota.json 의 "app"(모듈)·"entry"(함수),
+#   앱 교체 때는 패키지 매니페스트의 app·entry 로 바뀐다. 앱은 app.py 의 main() 만 제공한다.
+#   순서: WiFi(webota_net — 접속, 안 되면 설정용 AP) → 원격 배포 서버(:8266) → 앱.
+#   앱이 죽어도 WiFi·원격 배포는 살아 있다(구조 모드).
 import webota
 c = webota.load_config()
 webota.wifi_up(c)

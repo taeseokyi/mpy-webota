@@ -6,6 +6,16 @@ MicroPython 앱을 위한 **웹 API OTA와 원격 파일 관리** 모듈입니�
 
 앱 코드를 하나도 import하지 않으므로 어느 MicroPython 프로젝트에나 그대로 붙일 수 있습니다. 클라이언트는 표준 라이브러리만 쓰는 Python 3 스크립트입니다.
 
+## WiFi: webota가 전담합니다
+WiFi는 원격 배포와 설치 화면이 기기에 닿는 길 그 자체라서 **webota가 맡고, 앱은 만지지 않습니다.** 앱이 죽어도 WiFi와 설정 화면은 살아 있습니다. 앱은 `webota_net.is_connected()`, `ip()`, `ap_active()`, `status()`로 **상태만 읽습니다.**
+
+- **부팅**: `/webota.json`의 `wifi`로 접속을 시도합니다. 실패하거나 설정이 없으면 **설정용 AP**(`ap.ssid`/`ap.pass`, 기본 `webota-XXXX`/`webota1234`)를 올립니다.
+- **처음 설정**: 휴대폰을 그 AP에 붙이고 `http://192.168.4.1:8266/`에 들어갑니다. **AP로 붙은 기기는 토큰 없이** WiFi 카드(상태, 스캔, 저장)를 쓸 수 있습니다. AP 비밀번호가 인증입니다. 저장하면 곧바로 접속하고, 새 주소를 보여 준 뒤 잠시 있다가 AP를 내립니다.
+- **유지**: 끊기면 30초마다 재접속하고, 45초 넘게 안 붙으면 AP를 다시 올립니다.
+- **이름**: `hostname`을 설정하면 `http://<이름>.local`(mDNS)로도 접속할 수 있습니다.
+- 옛 `wifi_file`(앱이 쓰던 `{ssid, pass}` 파일)이 있으면 첫 부팅 때 `/webota.json`으로 한 번 옮겨 옵니다.
+- WiFi 자격증명은 webota 설정이라서 설정 초기화나 데이터 초기화로 지워지지 않습니다.
+
 ## 두 가지 쓰는 법 (함께 씁니다)
 | | 누가·언제 | 어떻게 |
 |---|---|---|
@@ -50,13 +60,14 @@ MicroPython 앱을 위한 **웹 API OTA와 원격 파일 관리** 모듈입니�
 | `device/webota.py` | `/webota.py` | OTA 서버. 별도 스레드, 기본 포트 :8266 |
 | `device/webota_boot.py` | `/webota_boot.py` | 부팅 때 배포 적용, 롤백, 확인 |
 | `device/webota_pkg.py` | `/webota_pkg.py` | 배포 패키지 목록 조회와 설치(HTTPS 클라이언트 포함) |
+| `device/webota_net.py` | `/webota_net.py` | WiFi 접속, 설정용 AP 폴백, 스캔과 저장(앱은 상태만 읽음) |
 | `device/webota_ui.html` | `/webota_ui.html` | 설치 화면(`http://<기기>:8266/`) |
 | `device/boot.py` | `/boot.py` | `webota_boot.apply()` 한 줄 |
 | `device/main.py` | `/main.py` | 범용 런처: WiFi 접속, OTA 서버, 앱 실행 |
 | `/webota.json` | `/webota.json` | 설정. 형식은 `device/webota.example.json` 참고 |
 | `client/webota.py` | (PC) | CLI 겸 라이브러리(`Client`) |
 
-앱 코드는 `main.py`가 아니라 **`app.py`**(설정 `"app"`)에 둡니다. `main()` 함수가 진입점입니다(설정 `"entry"`).
+**부팅 분기는 webota가 가집니다.** `boot.py`와 `main.py`는 webota의 파일이라 앱은 갖지 않고, 원본을 그대로 씁니다. 무엇을 띄울지는 `/webota.json`의 `"app"`(모듈)과 `"entry"`(함수)가 정하고, 앱을 교체하면 패키지 매니페스트의 값으로 바뀝니다. 앱은 **`app.py`의 `main()`**만 제공합니다.
 
 ## 동작
 1. **부팅**: `boot.py`가 적용과 롤백을 판단합니다.
@@ -76,8 +87,8 @@ MicroPython 앱을 위한 **웹 API OTA와 원격 파일 관리** 모듈입니�
 ```bash
 python3 client/webota.py --host 192.168.0.50 token      # ~/.config/webota/192.168.0.50.token
 # /webota.json 에 그 토큰을 넣는다 (webota.example.json 참고)
-mpremote fs cp device/webota.py device/webota_boot.py device/webota_pkg.py device/webota_ui.html \
-               device/boot.py device/main.py webota.json :
+mpremote fs cp device/webota.py device/webota_boot.py device/webota_pkg.py device/webota_net.py \
+               device/webota_ui.html device/boot.py device/main.py webota.json :
 mpremote fs cp app.py :          # 앱
 mpremote reset
 python3 client/webota.py --host 192.168.0.50 status
@@ -156,6 +167,7 @@ c.deploy({"/app.py": "build/app.py", "/www/i.html.gz": "build/i.html.gz"})
 | `POST /deploy/<id>/commit {files,delete,reset,label}` | 확정. 다음 부팅에 적용. `label`은 이력에 남음 |
 | `DELETE /deploy` | 트랜잭션 폐기 |
 | `POST /reset` | 리셋 |
+| `GET /wifi` · `GET /wifi/scan` · `POST /wifi {ssid,pass}` | WiFi 상태·스캔·저장. 설정용 AP로 붙은 기기는 토큰 없이 |
 | `GET /` | 설치 화면(이 페이지만 토큰 없이 열림. API 호출은 화면에서 입력한 토큰으로) |
 | `GET /pkg/list[?fresh=1]` | 패키지 목록과 현재 판 |
 | `POST /pkg/plan {url,reset_settings,reset_data}` | 설치 계획(쓸·지울·보존할 것) — 매니페스트만 읽는다 |

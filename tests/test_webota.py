@@ -549,6 +549,82 @@ def main():
           and "/data/wifi.json" not in pl["delete_reset"] and "/data/m.dat" not in pl["delete"], pl["delete_reset"])
     webota.cfg.pop("wifi_file", None)
 
+    print("== WiFi 는 webota 가 — 부팅 · AP 폴백 · AP 에서 토큰 없이 설정 · 옮겨 오기")
+    import types
+    import webota_net as net
+
+    class W:
+        def __init__(self, kind):
+            self.kind, self.on, self.conn, self.cfg = kind, False, False, {"mac": b"\x01\x02\x03\x04\xab\xcd"}
+        def active(self, v=None):
+            if v is None:
+                return self.on
+            self.on = v
+        def isconnected(self):
+            return self.conn
+        def connect(self, ssid, pw):
+            self.cfg["essid"] = ssid
+            self.conn = GOOD.get(ssid) == pw
+        def disconnect(self):
+            self.conn = False
+        def config(self, *a, **kw):
+            if kw:
+                self.cfg.update(kw)
+                return None
+            return self.cfg.get(a[0])
+        def ifconfig(self):
+            return ("10.0.0.5",) if self.kind == "sta" else ("127.0.0.1",)   # 시험 클라이언트 = AP 대역
+        def scan(self):
+            return [(b"Other", b"", 1, -70, 0, 0), (b"HomeNet", b"", 1, -50, 3, 0), (b"HomeNet", b"", 6, -80, 3, 0)]
+        def status(self, k):
+            return -50
+    GOOD = {"HomeNet": "pw123"}
+    fake = types.ModuleType("network")
+    fake.STA_IF, fake.AP_IF, fake.AUTH_WPA_WPA2_PSK = 0, 1, 3
+    _w = {0: W("sta"), 1: W("ap")}
+    fake.WLAN = lambda i: _w[i]
+    fake.hostname = lambda n: None
+    sys.modules["network"] = fake
+    net._sta = net._ap = net._down_since = net._up_since = net._last_try = None
+    c = dict(webota.cfg)
+    c["wifi"] = {"ssid": "HomeNet", "pass": "bad"}
+    c["wifi_timeout_s"] = 1
+    webota.cfg.update(c)
+    check("부팅 — 접속 실패면 AP", net.boot(webota.cfg) is False and net.ap_active())
+    check("AP 이름 기본값 — MAC 뒤 4자리", net.status()["ap_ssid"] == "webota-abcd")
+    anon = cl.Client("127.0.0.1:%d" % port, "")
+    st = anon._req("GET", "/wifi")[1]
+    check("AP 에서 토큰 없이 WiFi 상태", st["ok"] and st["wifi"]["ap_active"] and not st["wifi"]["connected"])
+    nets = anon._req("GET", "/wifi/scan")[1]["nets"]
+    check("스캔 — 신호 순 · 중복 제거", [n["ssid"] for n in nets] == ["HomeNet", "Other"] and nets[0]["rssi"] == -50)
+    check("AP 여도 다른 API 는 토큰 필요", raises(lambda: anon.status(), "401"))
+    r = anon._req("POST", "/wifi", body={"ssid": "HomeNet", "pass": "pw123"})[1]
+    disk = wb.read_json("/webota.json")
+    check("AP 에서 저장 — /webota.json 에(토큰 유지)", r["ok"] and disk["wifi"] == {"ssid": "HomeNet", "pass": "pw123"}
+          and disk["token"] == "t0k")
+    net.tick(webota.cfg)
+    check("저장 → 곧바로 재접속", net.is_connected() and net.ip() == "10.0.0.5")
+    check("접속 직후에는 AP 유지(휴대폰이 새 주소를 볼 시간)", net.ap_active())
+    net.AP_LINGER_S = 0
+    net.tick(webota.cfg)
+    check("잠시 뒤 AP 내림", not net.ap_active())
+    check("AP 가 내려가면 토큰 없이 WiFi 설정 불가", raises(lambda: anon._req("GET", "/wifi"), "401"))
+    check("토큰 있으면 WiFi API 됨", api._req("GET", "/wifi")[1]["wifi"]["connected"])
+    _w[0].conn = False
+    net.AP_AFTER_S = 0
+    net.tick(webota.cfg)
+    check("끊기면 재접속 시도 · 오래 안 되면 AP", net.ap_active() or net.is_connected())
+    # 옛 wifi_file(앱이 쓰던 파일)을 옮겨 온다
+    wr("/data/w.json", '{"ssid": "Legacy", "pass": "x"}')
+    d = wb.read_json("/webota.json"); d.pop("wifi"); wb.write_json("/webota.json", d)
+    c2 = {"wifi_file": "/data/w.json"}
+    check("옛 wifi_file → /webota.json 으로 옮김", net.creds(c2) == ("Legacy", "x")
+          and wb.read_json("/webota.json")["wifi"]["ssid"] == "Legacy")
+    del sys.modules["network"]
+    net._sta = net._ap = None
+    net.AP_LINGER_S, net.AP_AFTER_S = 60, 45
+    webota.cfg.pop("wifi", None)
+
     print("== CLI")
     base = ["--host", "127.0.0.1:%d" % port, "--token", "t0k", "-y"]
     check("cli ls", cl.main(base + ["ls", "/data"]) == 0)
