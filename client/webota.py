@@ -33,7 +33,7 @@ import sys
 import time
 import urllib.parse
 
-VERSION = "1.1.0"
+VERSION = "1.1.1"
 DEFAULT_PORT = 8266
 PROJECT_FILE = "webota.project.json"
 SIGNING_KEY = "~/.config/webota/signing-key.pem"       # 개인키 — 기기로 가지 않는다
@@ -585,7 +585,9 @@ def main(argv=None):
     s.add_argument("--switch-app", action="store_true", help="다른 앱의 패키지로 기기를 교체"); s.add_argument("--src")
     s.add_argument("--reset-settings", action="store_true", help="선언된 설정을 패키지 기본값으로(토큰·WiFi 는 유지)")
     s.add_argument("--reset-data", action="store_true", help="★선언된 데이터를 모두 지운다")
-    sub.add_parser("clean", help="지금 판에 없는 남은 코드 파일을 보여 주고 지운다(데이터 제외)")
+    s.add_argument("-y", "--yes", action="store_true", dest="yes_sub", help="확인 질문을 생략")
+    s = sub.add_parser("clean", help="지금 판에 없는 남은 코드 파일을 보여 주고 지운다(데이터 제외)")
+    s.add_argument("-y", "--yes", action="store_true", dest="yes_sub", help="확인 질문을 생략")
     s = sub.add_parser("signing-key", help="패키지 서명 키 — init(만들기) · show(공개키 id) · publish(프로젝트 파일에)")
     s.add_argument("action", choices=("init", "show", "publish")); s.add_argument("--key", default=SIGNING_KEY)
     s.add_argument("--no-passphrase", action="store_true", help="암호 없는 키(무인 빌드용 — 권하지 않는다)")
@@ -602,6 +604,7 @@ def main(argv=None):
     s = sub.add_parser("token", help="새 기기 토큰을 만들어 토큰 파일에 저장")
     s.add_argument("--overwrite", action="store_true")
     a = ap.parse_args(argv)
+    a.yes = a.yes or getattr(a, "yes_sub", False)     # -y 는 명령 앞·뒤 어디에 써도 된다
     project = find_project()
 
     try:

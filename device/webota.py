@@ -26,7 +26,7 @@ import time
 
 import webota_boot as wb
 
-VERSION = "1.0.0"
+VERSION = "1.1.1"
 CONFIG = "/webota.json"
 DEFAULTS = {"port": 8266, "app": "app", "entry": "main", "wifi_file": None,
             "wifi_keys": ["ssid", "pass"], "wifi_timeout_s": 20, "confirm_s": 90,
