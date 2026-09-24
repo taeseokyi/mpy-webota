@@ -213,6 +213,19 @@ def main():
     check("서명이 한 비트 바뀌면 거부", webota_sig.verify(msg, bytes(bad), [rec]) is None)
     check("키가 없으면 거부", webota_sig.verify(msg, sig, []) is None)
 
+    print("== 암호 걸린 서명 키(webota 가 암호를 묻고 openssl 에는 환경변수로)")
+    os.environ[cl.PASS_ENV] = "test-pass-1234"
+    kp = os.path.join(local, "enc.pem")
+    rec_p = cl.signing_key_init(kp)
+    check("암호 걸린 키 생성 · 공개키 파일", cl._encrypted(kp) and os.path.exists(kp + ".pub.json"))
+    check("암호 키로 서명 → 검증", webota_sig.verify(b"m", cl.sign(b"m", kp), [rec_p]) == rec_p["id"])
+    os.environ[cl.PASS_ENV] = "wrong-pass-00"
+    cl._pass_cache.clear()
+    check("틀린 암호 → 서명 거부", raises(lambda: cl.sign(b"m", kp), "openssl 실패"))
+    check("공개키는 암호 없이(.pub.json)", cl.pubkey_record(kp) == rec_p)
+    del os.environ[cl.PASS_ENV]
+    cl._pass_cache.clear()
+
     print("== 서명된 패키지 설치 · 바뀐 파일만 · 확인")
     files = {"/app.py": srcfile("app.py", "V = 1\n"), "/lib.py": srcfile("lib.py", "L = 1\n"),
              "/www/i.html": srcfile("www/i.html", "<p>1</p>")}
