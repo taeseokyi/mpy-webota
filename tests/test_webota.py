@@ -625,6 +625,41 @@ def main():
     net.AP_LINGER_S, net.AP_AFTER_S = 60, 45
     webota.cfg.pop("wifi", None)
 
+    print("== 첫 부팅 · 기기 등록(claim) · 토큰 바꾸기 · device-config")
+    import webota_net as net2
+    wb.remove("/other.json")
+    c0 = webota.load_config("/other.json")
+    check("설정 파일이 없으면 기본값으로 만든다", wb.exists("/other.json") and c0.get("token") is None
+          and c0["app"] == "app")
+    webota.load_config()                                     # 원래 설정으로
+    saved = webota.cfg.get("token")
+    disk0 = wb.read_json("/webota.json")
+    webota.cfg["token"] = None
+    anon = cl.Client("127.0.0.1:%d" % port, "")
+    h = anon._req("GET", "/hello")[1]
+    check("hello — 무인증, 등록 전", h["claimed"] is False and h["webota"] == webota.VERSION)
+    check("토큰 없으면 API 닫힘(403)", raises(lambda: anon.status(), "403"))
+    orig_from_ap = net2.from_ap
+    net2.from_ap = lambda peer: False
+    check("AP 밖에서는 등록 거부", raises(lambda: anon._req("POST", "/claim", body={"token": "x" * 32}), "AP"))
+    net2.from_ap = lambda peer: True
+    check("짧은 토큰 거부", raises(lambda: anon._req("POST", "/claim", body={"token": "short"}), "16자"))
+    r = anon._req("POST", "/claim", body={"token": "n3w" * 8})[1]
+    check("AP 에서 등록", r["ok"] and wb.read_json("/webota.json")["token"] == "n3w" * 8
+          and wb.read_json("/webota.json").get("sources") == disk0.get("sources"))
+    check("등록 뒤 다시 등록 거부", raises(lambda: anon._req("POST", "/claim", body={"token": "z" * 20}), "409"))
+    new_api = cl.Client("127.0.0.1:%d" % port, "n3w" * 8)
+    check("새 토큰으로 API", new_api.status()["webota"] == webota.VERSION)
+    check("토큰 바꾸기는 지금 토큰 필요", raises(lambda: anon._req("POST", "/token", body={"token": "q" * 20}), "401"))
+    new_api._req("POST", "/token", body={"token": "r" * 20})
+    check("토큰 바꾸기", webota.cfg["token"] == "r" * 20 and wb.read_json("/webota.json")["token"] == "r" * 20)
+    webota.cfg["token"] = saved                               # 시험용 짧은 토큰으로 되돌린다(API 는 16자 이상만)
+    d = wb.read_json("/webota.json"); d["token"] = saved; wb.write_json("/webota.json", d)
+    net2.from_ap = orig_from_ap
+    dc = cl.device_config({"app_id": "myapp", "device": {"hostname": "myapp", "ap": {"ssid": "myapp-setup"}}}, "T" * 32)
+    check("device-config — 기본값 + app_id + device 절 + 토큰", dc["app_id"] == "myapp" and dc["hostname"] == "myapp"
+          and dc["token"] == "T" * 32 and dc["port"] == 8266 and dc["app"] == "app")
+
     print("== CLI")
     base = ["--host", "127.0.0.1:%d" % port, "--token", "t0k", "-y"]
     check("cli ls", cl.main(base + ["ls", "/data"]) == 0)

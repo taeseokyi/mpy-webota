@@ -84,43 +84,30 @@ WiFi는 원격 배포와 설치 화면이 기기에 닿는 길 그 자체라서 
 5. **Ctrl-C**(USB REPL)는 그대로 REPL로 넘어갑니다. mpremote를 계속 쓸 수 있습니다.
 
 ## 설치 (USB 한 번)
+USB로는 **webota 파일만** 올리면 됩니다. `/webota.json`은 webota가 만듭니다.
 ```bash
-python3 client/webota.py --host 192.168.0.50 token      # ~/.config/webota/192.168.0.50.token
-# /webota.json 에 그 토큰을 넣는다 (webota.example.json 참고)
 mpremote fs cp device/webota.py device/webota_boot.py device/webota_pkg.py device/webota_net.py \
-               device/webota_ui.html device/boot.py device/main.py webota.json :
-mpremote fs cp app.py :          # 앱
-mpremote reset
-python3 client/webota.py --host 192.168.0.50 status
+               device/webota_ui.html device/boot.py device/main.py : + reset
 ```
+1. 설정 파일이 없으면 첫 부팅 때 **기본값으로 만들고**, 토큰도 WiFi도 없으니 **설정용 AP**(`webota-XXXX` / `webota1234`)를 올립니다.
+2. 휴대폰을 그 AP에 붙이고 `http://192.168.4.1:8266/`에 들어가 두 가지를 합니다.
+   - **기기 등록**: 토큰을 정하거나 '새로 만들기'를 누릅니다. 설정용 AP에서만, 한 번만 할 수 있습니다.
+   - **WiFi**: 공유기를 고르고 저장합니다.
+3. 등록한 토큰을 PC의 `~/.config/webota/<기기주소>.token`에 넣습니다. PC가 AP에 붙어 있다면 `webota.py --host 192.168.4.1 claim`으로 PC의 토큰 파일을 그대로 등록해도 됩니다.
+4. 이제 설치 화면의 패키지 목록에서 앱을 고르거나, WSL에서 `webota.py deploy`로 올립니다.
 
-## 배포 패키지 (.wpk): 기기 화면에서 골라 바로 설치
-앱 저장소가 판마다 패키지를 만들어 **GitHub Releases**에 올려 두면, webota를 설치한 기기의 화면(`http://<기기>:8266/`)에서 목록을 보고 골라 설치합니다. 기기가 직접 내려받아 해시를 검증하고, 바뀐 파일만 배포 트랜잭션으로 넘깁니다. 그 뒤 재부팅, 시험, 확인 또는 롤백은 다른 배포와 같습니다.
-
-- **형식** `webota-pkg/1`: `WPK1\n`, 매니페스트 길이, 매니페스트 JSON, 파일 내용을 차례로 이어 붙인 것입니다. 기기가 스트리밍으로 풀 수 있게 압축은 하지 않습니다.
-  매니페스트: `{format, app_id, name, version, label, built_at, webota, files:[{path,size,sha}], delete}`
-- **만들기**: `webota.py pack --app-id myapp --version 1.2.0 --out dist/`(프로젝트 `map` 기준). 빌드 단계가 있으면 라이브러리 `build_package(files, out, app_id, version, label)`를 씁니다.
-- **올리기**: `gh release create v1.2.0 dist/myapp-v1.2.0.wpk`. 판마다 릴리스가 쌓입니다.
-- **기기 설정** `/webota.json`:
-  ```json
-  {"app_id": "myapp", "sources": [{"github": "owner/repo"}]}
-  ```
-  출처는 여러 개를 둘 수 있고, 첫 항목이 기본입니다. 출처마다 `"asset": "*.wpk"`(기본값)와 `"max": 15`를 지정할 수 있습니다. 자체 호스팅은 `{"index": "http://.../index.json"}`(`[{tag,name,url,size,published}]`)으로 합니다. 옛 `"packages": {...}` 한 개짜리 설정도 읽습니다.
-- **출처 추가(설치 화면)**: `https://github.com/owner/repo`나 `owner/repo`를 넣고 '더하기'를 누릅니다. mpy-webota를 쓰는 **공개 저장소라면 어디든** 그 Releases의 `.wpk`가 목록에 뜹니다. 출처는 '빼기'와 '기본으로'로 관리합니다. CLI는 `webota.py sources --add owner/repo`입니다.
-- **앱 교체**: 목록의 `app_id`가 기기와 다르면 '설치' 대신 **'앱 교체'**가 뜹니다. 한 번 더 확인한 뒤 설치합니다.
-  - 새 `/webota.json`(`app_id`, `app`, `entry`, 출처 순서)이 **같은 트랜잭션**으로 들어갑니다. 그래서 새 앱이 90초를 못 버티면 코드와 설정이 함께 원래 앱으로 돌아갑니다.
-  - 토큰과 WiFi 설정은 그대로 두고, `/data`도 남습니다.
-  - webota 파일(`webota.py`, `webota_boot.py`, `main.py`, `boot.py`)이 없는 패키지로는 교체하지 않습니다. 교체한 뒤 원격 배포가 사라지기 때문입니다. CLI는 `pkg-install --switch-app`입니다.
-- **파일 이름 규약**: `<app_id>-v<판>….wpk`. 목록에서 앱을 알아보는 데 쓰고, 설치할 때는 매니페스트로 다시 확인합니다.
-- **예제**: [mpy-webota-demo](https://github.com/taeseokyi/mpy-webota-demo)는 mpy-webota를 쓰는 가장 작은 앱입니다. 새 프로젝트를 시작할 때 본보기로 씁니다.
-- **안전장치**:
-  - `app_id`가 다른 패키지는 거부합니다.
-  - 해시가 맞지 않으면 아무것도 바꾸지 않습니다.
-  - 앱 가드(측정 중 등)를 내려받기 전에 먼저 확인합니다.
-  - 화면의 '고급'에서 가드 검사를 무시할 수 있습니다.
-- **CLI**: `webota.py pkg-list`, `webota.py pkg-install <URL>`.
-- ★공개 저장소 전제입니다(토큰 없이 내려받음). 기기에 CA 묶음이 없어 **TLS 인증서를 검증하지 않습니다.** 파일 무결성은 매니페스트 해시로 확인하지만, 매니페스트도 같은 출처에서 오므로 경로 위조까지 막지는 못합니다.
-- ★옛 판 패키지를 설치하면 그 판에 들어 있는 webota로 내려갈 수 있습니다. 패키지 기능이 없는 판(webota < 0.3.0)으로 내려가면 이 화면도 사라집니다.
+**미리 설정해서 굽기**(선택): 앱 프로젝트의 선언으로 설정 파일을 만들어 함께 올리면 AP와 등록을 건너뜁니다.
+```bash
+python3 client/webota.py device-config --out webota.json   # 프로젝트 app_id·device 절 + 토큰(없으면 만든다)
+mpremote fs cp webota.json :
+```
+★**`webota.json`은 이 명령(또는 기기의 첫 부팅)으로만 만듭니다.** 앱 저장소에는 생성 코드를 두지 않고, 앱은 프로젝트 파일에 선언만 합니다.
+```json
+{"app_id": "myapp",
+ "device": {"ap": {"ssid": "myapp-setup", "pass": "…"}, "hostname": "myapp",
+            "sources": [{"github": "owner/repo"}]}}
+```
+토큰 바꾸기: `webota.py set-token --new-token-file 새파일`(지금 토큰으로 인증).
 
 ## 클라이언트
 ```bash
@@ -167,6 +154,9 @@ c.deploy({"/app.py": "build/app.py", "/www/i.html.gz": "build/i.html.gz"})
 | `POST /deploy/<id>/commit {files,delete,reset,label}` | 확정. 다음 부팅에 적용. `label`은 이력에 남음 |
 | `DELETE /deploy` | 트랜잭션 폐기 |
 | `POST /reset` | 리셋 |
+| `GET /hello` | 무인증 — `{webota, claimed, from_ap}` |
+| `POST /claim {token}` | 토큰 없는 기기 등록 — 설정용 AP에서만, 한 번 |
+| `POST /token {token}` | 토큰 바꾸기(지금 토큰 필요) |
 | `GET /wifi` · `GET /wifi/scan` · `POST /wifi {ssid,pass}` | WiFi 상태·스캔·저장. 설정용 AP로 붙은 기기는 토큰 없이 |
 | `GET /` | 설치 화면(이 페이지만 토큰 없이 열림. API 호출은 화면에서 입력한 토큰으로) |
 | `GET /pkg/list[?fresh=1]` | 패키지 목록과 현재 판 |
