@@ -223,10 +223,11 @@ class Client:
                     log("  재부팅 중…")
                 rebooted = True
                 continue
-            if not rebooted and st.get("uptime_s", 0) >= st0.get("uptime_s", 0):
+            last = st.get("last") or {}
+            ours = last.get("id") == did or (st.get("trial") or {}).get("id") == did
+            if not rebooted and not ours and st.get("uptime_s", 0) >= st0.get("uptime_s", 0):
                 continue                         # 아직 리셋 전
             rebooted = True
-            last = st.get("last") or {}
             if last.get("id") == did and last.get("result") == "rolled_back":
                 raise WebotaError("★롤백됨 — %s (앱 오류: %s)"
                                   % (last.get("reason"), (st.get("app") or {}).get("error", "")[-300:]))
