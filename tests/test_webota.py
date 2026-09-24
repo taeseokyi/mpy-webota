@@ -371,6 +371,75 @@ def main():
     check("앱 교체 롤백 — 설정도 원래대로", wb.read_json("/webota.json") == before and
           rd("/app.py") != b"OTHER = 1\n")
 
+    print("== 설치 = 코드를 패키지 그대로(설정·데이터 구분) · 정리")
+    webota.set_guard(None)
+    p3 = os.path.join(local, "p3")
+    os.makedirs(os.path.join(p3, "www"))
+    open(os.path.join(p3, "app.py"), "w").write("V = 30\n")
+    open(os.path.join(p3, "www", "i.html"), "w").write("<p>3</p>")
+    open(os.path.join(p3, "config.json"), "w").write('{"a": 1}')
+    files3 = {"/app.py": os.path.join(p3, "app.py"), "/www/i.html": os.path.join(p3, "www", "i.html"),
+              "/config.json": os.path.join(p3, "config.json")}
+    check("데이터 경로 파일은 패키지에 못 넣음", raises(lambda: cl.build_package(
+        {"/logs/x": lp}, os.path.join(pk, "no.wpk"), "testapp", "3", data=["/logs"]), "데이터"))
+    m3 = cl.build_package(files3, os.path.join(pk, "p3.wpk"), "testapp", "3.0.0", "v3.0.0",
+                          settings=["/config.json", "/etc"], data=["/data", "/logs"])
+    check("매니페스트 — 설정 기본값 kind", [f.get("kind") for f in m3["files"] if f["path"] == "/config.json"]
+          == ["setting"] and m3["settings"] == ["/config.json", "/etc"])
+    for path, body in (("/stray.py", "x"), ("/www/old.js", "x"), ("/www/vendor/x.js", "x"),
+                       ("/config.json", '{"a": 9}'), ("/etc/net.json", "{}"), ("/logs/l.txt", "log"),
+                       ("/data/keep.json", "{}")):
+        wr(path, body)
+    n0 = len(resets)
+    check("설치 커밋", api.pkg_install(base_url + "/p3.wpk", wait=False, log=lambda *_: None) == "committed"
+          and wait_resets(resets, n0 + 1))
+    wb.apply()
+    check("코드 — 패키지에 없는 파일 삭제", not wb.exists("/stray.py") and not wb.exists("/www/old.js")
+          and not wb.exists("/www/vendor/x.js"))
+    check("빈 디렉토리 정리", not wb.exists("/www/vendor") and wb.exists("/www/i.html"))
+    check("설정 — 기기 값 유지(덮어쓰지 않음)", rd("/config.json") == b'{"a": 9}')
+    check("설정 디렉토리 · 앱 데이터 · /data 유지", wb.exists("/etc/net.json") and wb.exists("/logs/l.txt")
+          and wb.exists("/data/keep.json"))
+    check("webota 자신(CORE)·기기 설정 유지", wb.exists("/boot.py") and wb.exists("/webota.json"))
+    inst = wb.read_json("/webota/installed.json")
+    check("installed.json — 파일·설정·데이터", inst["files"] == sorted(files3) and inst["data"] == ["/data", "/logs"], inst)
+    webota._trial = True; webota.app_state = "running"; webota._tick()
+    check("확인 → 백업(prev) 삭제", not wb.exists("/webota/prev"))
+    st = api.status()
+    check("status.keep — 설정·데이터 목록", "/config.json" in st["keep"]["settings"] and "/logs" in st["keep"]["data"], st["keep"])
+    wb.remove("/config.json")
+    n0 = len(resets)
+    api.pkg_install(base_url + "/p3.wpk", wait=False, log=lambda *_: None)
+    wait_resets(resets, n0 + 1); wb.apply()
+    check("설정 기본값 — 기기에 없을 때만 들어감", rd("/config.json") == b'{"a": 1}')
+    wb.confirm()
+    api.put(lp, "/extra.py")
+    api.put(lp, "/etc/new.json")
+    m = api.status()["modified"]
+    check("설정 수정은 수동 변경 아님", m and "/etc/new.json" not in m["paths"] and "/extra.py" in m["paths"], m)
+    o = api.orphans()
+    check("orphans — 남은 코드만(설정·데이터 제외)", [e["path"] for e in o["orphans"]] == ["/extra.py"], o)
+    r = api.clean(["/extra.py", "/config.json", "/app.py", "/data/keep.json"])
+    check("clean — 남은 파일만 지우고 나머지 거부", r["deleted"] == ["/extra.py"] and
+          sorted(r["refused"]) == ["/app.py", "/config.json", "/data/keep.json"], r)
+    c2 = cl.Client("127.0.0.1:%d" % port, "t0k", settings=["/config.json"])
+    open(os.path.join(p3, "config.json"), "w").write('{"a": 2}')
+    open(os.path.join(p3, "app.py"), "w").write("V = 31\n")
+    res = c2.deploy(files3, wait=False, log=lambda *_: None)
+    check("WSL 배포 — 기기에 있는 설정은 올리지 않음", res["changed"] == ["/app.py"], res)
+    wait_resets(resets, len(resets) + 1); wb.apply()
+    check("WSL 배포 — installed 에 설정 경로", wb.read_json("/webota/installed.json")["settings"] == ["/config.json"])
+    # 롤백하면 지운 코드 파일도 돌아온다
+    wb.confirm()
+    wr("/stray2.py", "y")
+    n0 = len(resets)
+    api.pkg_install(base_url + "/p3.wpk", wait=False, log=lambda *_: None)
+    wait_resets(resets, n0 + 1); wb.apply()
+    check("설치 적용 — stray2 삭제", not wb.exists("/stray2.py"))
+    wb.apply(); wb.apply(); wb.apply()
+    check("롤백 — 지운 코드 파일 복원 · installed 원래대로", wb.exists("/stray2.py") and
+          wb.read_json("/webota/installed.json")["settings"] == ["/config.json"])
+
     print("== CLI")
     base = ["--host", "127.0.0.1:%d" % port, "--token", "t0k", "-y"]
     check("cli ls", cl.main(base + ["ls", "/data"]) == 0)
