@@ -31,7 +31,7 @@ import sys
 import time
 import urllib.parse
 
-VERSION = "1.0.0"
+VERSION = "1.0.1"
 DEFAULT_PORT = 8266
 PROJECT_FILE = "webota.project.json"
 SIGNING_KEY = "~/.config/webota/signing-key.pem"       # 개인키 — 기기로 가지 않는다
@@ -87,14 +87,25 @@ def signing_key_init(path=SIGNING_KEY, overwrite=False, passphrase=True):
     if subprocess.call(args) != 0:
         raise WebotaError("키를 만들지 못했다")
     os.chmod(path, 0o600)
-    return pubkey_record(path)
+    rec = _pubkey_from_key(path)
+    with open(path + ".pub.json", "w") as f:       # 공개키는 따로 — device-config 가 암호 없이 읽는다
+        json.dump(rec, f)
+    return rec
 
 
 def pubkey_record(path=SIGNING_KEY):
-    """개인키 → 기기에 심을 공개키 {id, n, e}. id = 모듈러스 SHA256 앞 16자."""
+    """기기에 심을 공개키 {id, n, e} — 키 옆의 .pub.json 이 있으면 그것(암호 없이), 없으면 개인키에서."""
     path = os.path.expanduser(path)
+    if os.path.exists(path + ".pub.json"):
+        with open(path + ".pub.json") as f:
+            return json.load(f)
     if not os.path.exists(path):
         raise WebotaError("서명 키가 없다: %s — webota.py signing-key init" % path)
+    return _pubkey_from_key(path)
+
+
+def _pubkey_from_key(path):
+    """개인키 → 공개키 {id, n, e}. id = 모듈러스 SHA256 앞 16자. 암호 걸린 키면 openssl 이 묻는다."""
     import subprocess
     try:                                           # 암호 걸린 키면 openssl 이 터미널에서 묻는다
         out = subprocess.run(["openssl", "rsa", "-in", path, "-noout", "-modulus"], stdout=subprocess.PIPE,
