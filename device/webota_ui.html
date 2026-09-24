@@ -34,7 +34,8 @@
   dt { color: var(--muted); } dd { margin: 0; overflow-wrap: anywhere; }
   table { width: 100%; border-collapse: collapse; font-size: .9rem; }
   th, td { text-align: left; padding: 7px 6px; border-bottom: 1px solid var(--line); vertical-align: middle; }
-  th { color: var(--muted); font-weight: 600; }
+  th { color: var(--muted); font-weight: 600; white-space: nowrap; }
+  td.n, button { white-space: nowrap; }
   .chip { display: inline-block; padding: 1px 8px; border-radius: 999px; background: var(--chip);
           font-size: .75rem; font-weight: 700; margin-left: 4px; }
   .chip.cur { color: var(--ok); } .chip.pre { color: var(--warn); }
@@ -113,7 +114,9 @@ function renderStatus(st) {
   const last = st.last || {};
   const rows = [
     ["앱", esc(st.app_id || st.app?.name || "—") + " · " + esc(st.app?.state)],
-    ["현재 판", esc(st.current || "—") + (st.trial ? ' <span class="chip pre">시험 중</span>' : "")],
+    ["현재 판", esc(st.current || "—") + (st.trial ? ' <span class="chip pre">시험 중</span>' : "") +
+             (st.modified?.paths?.length ? ` <span class="chip pre" title="${esc(st.modified.paths.join("\n"))}">+ 수동 변경 ${st.modified.paths.length}</span>` +
+               `<div class="muted" style="font-size:.8rem">${esc(st.modified.paths.slice(0, 6).join(", "))}${st.modified.paths.length > 6 ? " …" : ""} — 패키지를 설치하면 판 그대로 돌아갑니다</div>` : "")],
     ["마지막 배포", last.result ? `<span class="${last.result === "ok" ? "ok" : "bad"}">${esc(last.result)}</span> ${esc(last.label || "")} · ${esc(last.at || "")}${last.reason ? " — " + esc(last.reason) : ""}` : "—"],
     ["가동", Math.round((st.uptime_s || 0) / 60) + "분 · 메모리 " + (st.mem_free ? Math.round(st.mem_free / 1024) + "KB" : "—") +
              (st.fs ? " · 저장 공간 " + Math.round(st.fs.free / 1024) + "KB 남음" : "")],
@@ -128,8 +131,8 @@ function renderPkgs(list) {
   $("pkgs").innerHTML = list.length ? list.map((p, i) => `
     <tr><td>${esc(p.name || p.tag)}${isCurrent(p) ? '<span class="chip cur">현재</span>' : ""}${p.prerelease ? '<span class="chip pre">시험판</span>' : ""}
           <div class="muted" style="font-size:.8rem">${esc(p.asset || "")}</div></td>
-        <td>${esc(p.published || "")}</td>
-        <td>${p.size ? Math.round(p.size / 1024) + "KB" : ""}</td>
+        <td class="n">${esc(p.published || "")}</td>
+        <td class="n">${p.size ? (p.size < 1024 ? "<1KB" : Math.round(p.size / 1024) + "KB") : ""}</td>
         <td><button data-i="${i}">설치</button></td></tr>`).join("")
     : '<tr><td colspan="4" class="muted">패키지가 없습니다</td></tr>';
   $("pkgs").querySelectorAll("button[data-i]").forEach((b) => (b.onclick = () => install(list[+b.dataset.i], b)));

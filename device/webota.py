@@ -34,11 +34,12 @@ import time
 
 import webota_boot as wb
 
-VERSION = "0.3.0"
+VERSION = "0.4.0"
 CONFIG = "/webota.json"
 DEFAULTS = {"port": 8266, "app": "app", "entry": "main", "wifi_file": None,
             "wifi_keys": ["ssid", "pass"], "wifi_timeout_s": 20, "confirm_s": 90,
-            "token": None, "app_id": None, "packages": None, "ui": "/webota_ui.html"}
+            "token": None, "app_id": None, "packages": None, "ui": "/webota_ui.html",
+            "data_dirs": ["/data"]}
 CHUNK = 2048
 MAX_JSON = 64 * 1024
 
@@ -272,7 +273,8 @@ def status():
           "pending": wb.exists(wb.DIR + "/pending.json"),
           "last": wb.read_json(wb.DIR + "/last.json"),
           "deploy_id": _deploy_id, "confirm_s": cfg.get("confirm_s"),
-          "app_id": cfg.get("app_id"), "current": _current()}
+          "app_id": cfg.get("app_id"), "current": _current(),
+          "modified": wb.read_json(wb.DIR + "/modified.json")}
     try:
         import gc
         st["mem_free"] = gc.mem_free()
@@ -306,6 +308,8 @@ def _fs(conn, method, path, q, rf, clen):
         if wb.is_dir(path):
             return _err(conn, "409 Conflict", "디렉토리다: " + path)
         ok, msg, got = _recv_file(rf, clen, path, q.get("sha"))
+        if ok:
+            _mark_modified(path)
         return _json(conn, {"ok": ok, "err": msg, "path": path, "sha": got},
                      "200 OK" if ok else "400 Bad Request")
     if method == "DELETE":
@@ -321,6 +325,7 @@ def _fs(conn, method, path, q, rf, clen):
                     return _err(conn, "409 Conflict", "비어 있지 않다(r=1 로 재귀 삭제): " + path)
         else:
             os.remove(wb.p(path))
+        _mark_modified(path)
         return _json(conn, {"ok": True, "path": path})
     if method == "POST":
         op = q.get("op")
@@ -334,6 +339,8 @@ def _fs(conn, method, path, q, rf, clen):
             if not wb.exists(path):
                 return _err(conn, "404 Not Found", "없음: " + path)
             wb.move(path, to)
+            _mark_modified(path)
+            _mark_modified(to)
             return _json(conn, {"ok": True, "path": to})
         return _err(conn, "400 Bad Request", "op 는 mkdir | mv")
     return _err(conn, "405 Method Not Allowed", method)
@@ -352,6 +359,21 @@ def _commit(did, paths, deletes, label, reset, force):
     if reset:
         _reset_pending = True
     return True, "200 OK", ""
+
+
+def _mark_modified(path):
+    """파일 API 로 **코드**를 손댔다 — 기기가 더는 '현재 판' 그대로가 아니다. 데이터 디렉토리
+    (data_dirs)와 /webota 는 운영 중 늘 바뀌므로 세지 않는다. 배포·패키지 설치가 그 파일을
+    다시 덮으면 부팅 적용 때 목록에서 빠진다(webota_boot)."""
+    for d in (cfg.get("data_dirs") or []) + [wb.DIR]:
+        d = d.rstrip("/")
+        if path == d or path.startswith(d + "/"):
+            return
+    m = wb.read_json(wb.DIR + "/modified.json", {}) or {}
+    paths = m.get("paths") or []
+    if path not in paths:
+        paths.append(path)
+    wb.write_json(wb.DIR + "/modified.json", {"paths": paths[-200:], "at": wb.stamp()})
 
 
 def _current():

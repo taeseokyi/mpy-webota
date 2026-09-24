@@ -308,6 +308,22 @@ def main():
                                                          wait=False, log=lambda *_: None), "측정 중"))
     webota.set_guard(None)
 
+    print("== 수동 변경 추적(WSL 세부 조정 ↔ 패키지)")
+    wb.remove("/webota/modified.json")
+    with open(lp, "w") as f:
+        f.write("TWEAK = 1\n")
+    api.put(lp, "/app.py")
+    api.put(lp, "/data/cfg.json")
+    m = api.status()["modified"]
+    check("코드 수정은 기록, 데이터는 제외", m and m["paths"] == ["/app.py"], m)
+    api.rm("/data/cfg.json")
+    check("데이터 삭제도 제외", api.status()["modified"]["paths"] == ["/app.py"])
+    r = api.pkg_install(base_url + "/t.wpk", wait=False, log=lambda *_: None)
+    check("수동 변경 뒤 패키지 설치 → 그 파일을 되돌림", r == "committed")
+    wait_resets(resets, len(resets) + 1)
+    wb.apply()
+    check("패키지 적용 → 수동 변경 해제", api.status()["modified"] is None and rd("/app.py") == b"V = 20\n")
+
     print("== CLI")
     base = ["--host", "127.0.0.1:%d" % port, "--token", "t0k", "-y"]
     check("cli ls", cl.main(base + ["ls", "/data"]) == 0)
