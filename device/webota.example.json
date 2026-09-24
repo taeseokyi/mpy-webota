@@ -1,0 +1,9 @@
+{
+  "token": "<32자 이상 랜덤 hex — webota.py token 으로 만든다>",
+  "port": 8266,
+  "app": "app",
+  "entry": "main",
+  "wifi_file": "/data/wifi.json",
+  "wifi_keys": ["ssid", "pass"],
+  "confirm_s": 90
+}
