@@ -142,7 +142,7 @@ def main():
     extra = cl.extra_remote(api, files, scopes)
     check("extra_remote — map 범위의 원격 전용 파일만", "/old.py" in extra and "/boot.py" in extra
           and not any(p.startswith("/data") for p in extra), extra)
-    res = api.deploy(files, ["/old.py"], wait=False, log=lambda *_: None)
+    res = api.deploy(files, ["/old.py"], wait=False, log=lambda *_: None, label="v1+aaa")
     check("바뀐 파일만", sorted(res["changed"]) == ["/app.py", "/www/i.html"], res)
     check("커밋 후 리셋 요청", wait_resets(resets, 1))
     check("pending 기록", wb.exists("/webota/pending.json"))
@@ -156,6 +156,7 @@ def main():
     webota._tick()                                         # confirm_s=0 → 곧바로 확인
     last = wb.read_json("/webota/last.json")
     check("확인 → last ok", last and last["result"] == "ok" and last["id"] == res["id"], last)
+    check("라벨이 last 에", last.get("label") == "v1+aaa", last)
     check("unchanged", api.deploy(files, wait=False, log=lambda *_: None)["result"] == "unchanged")
 
     print("== 롤백: 확인 없이 3회 부팅")
@@ -175,6 +176,9 @@ def main():
     check("롤백 — 새 파일 제거", not wb.exists("/new.py"))
     last = wb.read_json("/webota/last.json")
     check("last rolled_back", last["result"] == "rolled_back" and last["id"] == res2["id"], last)
+    h = api.history(5)
+    check("history — ok 다음 rolled_back", [e["result"] for e in h] == ["ok", "rolled_back"]
+          and h[0]["label"] == "v1+aaa", h)
 
     print("== 앱 예외: 시험 중이면 롤백 · 아니면 구조 모드")
     sys.path.insert(0, root)

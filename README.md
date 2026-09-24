@@ -52,7 +52,8 @@ webota.py put 로컬 /원격
 webota.py rm '/data/*.bak' [-r]          # 글롭은 기기 쪽에서 푼다 — 따옴표
 webota.py mkdir /d ; webota.py mv /a /b
 webota.py reset [--force]
-webota.py deploy [--delete] [--dry-run] [--force] [--no-reset]
+webota.py deploy [--delete] [--dry-run] [--force] [--no-reset] [--label L]
+webota.py history [-n 20]                # 배포 결과 이력
 ```
 - `deploy`는 프로젝트 루트(현재 디렉토리부터 위로 찾음)의 `webota.project.json`을 읽습니다.
   ```json
@@ -76,6 +77,7 @@ c.deploy({"/app.py": "build/app.py", "/www/i.html.gz": "build/i.html.gz"})
 | 요청 | 설명 |
 |---|---|
 | `GET /status` | 가동 시간, 메모리, FS, 앱 상태(`running`/`rescue`...), 오류, 시험·마지막 결과 |
+| `GET /history[?n=10]` | 배포 결과 이력(`/webota/history.jsonl`, 최근 50건) |
 | `GET /fs/<경로>[?r=1&sha=1]` | 파일 내용 또는 디렉토리 목록 |
 | `PUT /fs/<경로>[?sha=]` | 쓰기(임시 파일, 해시 확인, 교체). 상위 디렉토리 자동 생성 |
 | `DELETE /fs/<경로>[?r=1]` | 삭제 |
@@ -83,7 +85,7 @@ c.deploy({"/app.py": "build/app.py", "/www/i.html.gz": "build/i.html.gz"})
 | `POST /sha {"paths":[...]}` | 경로별 SHA256 |
 | `POST /deploy/begin` | 배포 트랜잭션 시작. id를 돌려줌 |
 | `PUT /deploy/<id>/<경로>?sha=` | 스테이징 |
-| `POST /deploy/<id>/commit {files,delete,reset}` | 확정. 다음 부팅에 적용 |
+| `POST /deploy/<id>/commit {files,delete,reset,label}` | 확정. 다음 부팅에 적용. `label`은 이력에 남음 |
 | `DELETE /deploy` | 트랜잭션 폐기 |
 | `POST /reset` | 리셋 |
 
@@ -93,6 +95,12 @@ c.deploy({"/app.py": "build/app.py", "/www/i.html.gz": "build/i.html.gz"})
 - 토큰이 설정되지 않으면 **모든 요청을 거부**합니다.
 - 토큰은 평문 HTTP로 오갑니다. LAN 전용을 전제로 합니다.
 - 경로 제한이 없으므로 토큰을 가진 쪽은 기기 전체를 다룰 수 있습니다.
+
+## 버전과 배포 이력
+- webota 자체 판은 `device/webota.py`와 `client/webota.py`의 `VERSION`에 있고, `status`의 `"webota"`로 보입니다. 릴리스마다 `git tag v<판>`을 답니다.
+- 배포마다 **라벨**(예: 앱 판과 커밋 `v1.1.0+abc1234`)을 붙이면 `trial`, `last`, `history`에 남습니다. CLI의 기본 라벨은 프로젝트의 `git describe --tags --always --dirty`입니다.
+- 롤백은 바로 이전 판 **1단계**입니다(`/webota/prev`). 더 이전 판은 저장소의 태그에서 다시 배포합니다.
+- 앱 프로젝트에 파일을 복사(vendor)해 쓸 때는 머리에 출처 커밋을 적고, 원본에서 고친 뒤 다시 복사합니다.
 
 ## 시험
 ```bash

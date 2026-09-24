@@ -8,7 +8,8 @@
 #   pending.json         커밋됨 — 다음 부팅에 적용할 것 {id, files:[경로], delete:[경로]}
 #   prev/files/<경로>    적용 직전의 원래 파일(롤백용)  + prev/manifest.json
 #   trial.json           새 판 시험 중 {id, boots} — 앱이 confirm_s 동안 살아 있으면 지운다
-#   last.json            마지막 배포 결과 {id, result: ok|rolled_back, reason, at}
+#   last.json            마지막 배포 결과 {id, label, result: ok|rolled_back, reason, at}
+#   history.jsonl        배포 결과 이력(한 줄 = 한 배포, 최근 HISTORY_MAX 건)
 #
 # ★적용은 멱등이다: 적용 도중 전원이 나가면 다음 부팅에 pending 이 그대로 남아 있어 다시
 #   돈다. 이미 옮겨진 파일(stage 에 없음)은 건너뛰고, 백업은 처음 한 번만 뜬다.
@@ -19,6 +20,7 @@ import time
 ROOT = ""                 # 테스트가 임시 디렉토리로 바꾼다. 기기에서는 "" (= 파일시스템 루트)
 DIR = "/webota"
 MAX_BOOTS = 3             # 확인(confirm) 없이 이만큼 부팅하면 롤백 — WDT/행으로 반복 리셋되는 경우
+HISTORY_MAX = 50
 
 
 def p(path):
@@ -129,6 +131,37 @@ def _log(msg):
     print("[webota] " + msg)
 
 
+def record(entry):
+    """배포 결과를 last.json 에 쓰고 history.jsonl 에 한 줄 덧붙인다(최근 HISTORY_MAX 건)."""
+    write_json(DIR + "/last.json", entry)
+    lines = []
+    try:
+        with open(p(DIR + "/history.jsonl")) as f:
+            lines = [ln for ln in f.read().split("\n") if ln.strip()]
+    except OSError:
+        pass
+    lines = lines[-(HISTORY_MAX - 1):] + [json.dumps(entry)]
+    tmp = DIR + "/history.jsonl.tmp"
+    with open(p(tmp), "w") as f:
+        f.write("\n".join(lines) + "\n")
+    move(tmp, DIR + "/history.jsonl")
+
+
+def history(n=10):
+    try:
+        with open(p(DIR + "/history.jsonl")) as f:
+            lines = [ln for ln in f.read().split("\n") if ln.strip()]
+    except OSError:
+        return []
+    out = []
+    for ln in lines[-n:]:
+        try:
+            out.append(json.loads(ln))
+        except ValueError:
+            pass
+    return out
+
+
 # ── 적용 · 롤백 · 확인 ──
 
 def apply():
@@ -177,7 +210,8 @@ def _apply_pending():
             rmtree(path)
         else:
             remove(path)
-    write_json(DIR + "/trial.json", {"id": pend.get("id"), "boots": 0, "at": stamp()})
+    write_json(DIR + "/trial.json", {"id": pend.get("id"), "label": pend.get("label"),
+                                     "boots": 0, "at": stamp()})
     remove(DIR + "/pending.json")
     rmtree(DIR + "/stage")
     _log("배포 %s 적용 — 파일 %d개, 삭제 %d개 (시험 시작)"
@@ -195,8 +229,8 @@ def rollback(reason):
         if exists(path) and not is_dir(path):
             remove(path)
     t = read_json(DIR + "/trial.json", {}) or {}
-    write_json(DIR + "/last.json", {"id": t.get("id") or man.get("id"), "result": "rolled_back",
-                                    "reason": reason, "at": stamp()})
+    record({"id": t.get("id") or man.get("id"), "label": t.get("label"), "result": "rolled_back",
+            "reason": reason, "at": stamp()})
     remove(DIR + "/trial.json")
     _log("롤백 — %s" % reason)
 
@@ -210,7 +244,7 @@ def confirm():
     t = read_json(DIR + "/trial.json")
     if t is None:
         return False
-    write_json(DIR + "/last.json", {"id": t.get("id"), "result": "ok", "at": stamp()})
+    record({"id": t.get("id"), "label": t.get("label"), "result": "ok", "at": stamp()})
     remove(DIR + "/trial.json")
     _log("배포 %s 확인 — 정상" % t.get("id"))
     return True

@@ -8,6 +8,7 @@
 # 않으면 **모든 요청을 거부**한다(안전 기본값).
 #
 #   GET    /status                      가동 시간·메모리·FS·앱 상태·마지막 배포 결과
+#   GET    /history[?n=10]              배포 결과 이력(라벨·ok|rolled_back·사유·시각)
 #   GET    /fs/<경로>[?r=1&sha=1]        파일 내용 / 디렉토리 목록(JSON)
 #   PUT    /fs/<경로>[?sha=<hex>]        파일 쓰기(임시 파일 → 해시 확인 → 교체)
 #   DELETE /fs/<경로>[?r=1]              파일 · 디렉토리(r=1 재귀) 삭제
@@ -16,7 +17,8 @@
 #   POST   /sha        {"paths":[...]}   경로별 SHA256(없으면 null) — 바뀐 파일만 올리기용
 #   POST   /deploy/begin                 배포 트랜잭션 시작 → {"id"}
 #   PUT    /deploy/<id>/<경로>?sha=<hex> 새 파일 스테이징
-#   POST   /deploy/<id>/commit           {"files":[{path,sha}], "delete":[...], "reset":true}
+#   POST   /deploy/<id>/commit           {"files":[{path,sha}], "delete":[...], "reset":true,
+#                                         "label":"v1.2.0+abc1234"}   ← 라벨은 이력에 남는다
 #   DELETE /deploy                       진행 중 트랜잭션 폐기
 #   POST   /reset
 #   (commit · reset 은 앱이 set_guard() 로 등록한 가드를 거친다 — ?force=1 로 무시)
@@ -29,7 +31,7 @@ import time
 
 import webota_boot as wb
 
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 CONFIG = "/webota.json"
 DEFAULTS = {"port": 8266, "app": "app", "entry": "main", "wifi_file": None,
             "wifi_keys": ["ssid", "pass"], "wifi_timeout_s": 20, "confirm_s": 90,
@@ -367,11 +369,12 @@ def _deploy(conn, method, rest, q, rf, clen):
         ok, msg = _check_guard(q.get("force") == "1")
         if not ok:
             return _err(conn, "423 Locked", msg or "앱 가드가 거부")
-        wb.write_json(wb.DIR + "/pending.json", {"id": _deploy_id, "files": paths,
+        label = body.get("label")
+        wb.write_json(wb.DIR + "/pending.json", {"id": _deploy_id, "label": label, "files": paths,
                                                  "delete": deletes, "at": wb.stamp()})
         reset = body.get("reset", True)
-        _json(conn, {"ok": True, "id": _deploy_id, "files": len(paths), "delete": len(deletes),
-                     "reset": bool(reset)})
+        _json(conn, {"ok": True, "id": _deploy_id, "label": label, "files": len(paths),
+                     "delete": len(deletes), "reset": bool(reset)})
         _deploy_id = None
         if reset:
             _reset_pending = True
@@ -420,6 +423,12 @@ def _handle(conn):
         return _err(conn, "401 Unauthorized", "토큰 불일치")
     if raw_path == "/status" and method == "GET":
         return _json(conn, status())
+    if raw_path == "/history" and method == "GET":
+        try:
+            n = int(q.get("n") or 10)
+        except ValueError:
+            n = 10
+        return _json(conn, {"ok": True, "history": wb.history(n)})
     if raw_path == "/fs" or raw_path.startswith("/fs/"):
         path = _norm(raw_path[3:])
         if path is None:

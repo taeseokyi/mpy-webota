@@ -10,7 +10,8 @@
     webota.py rm '/data/*.bak'                    # ★따옴표: 글롭은 기기 쪽에서 푼다
     webota.py mkdir /data/x ;  webota.py mv /a /b
     webota.py reset
-    webota.py deploy [--delete] [--dry-run]       # 프로젝트 파일의 map 대로, 바뀐 파일만
+    webota.py deploy [--delete] [--dry-run] [--label L]  # map 대로, 바뀐 파일만(라벨 기본: git describe)
+    webota.py history [-n 20]                     # 배포 결과 이력
     webota.py token                               # 새 토큰 생성(파일 저장)
 
 설정 찾는 순서:
@@ -32,7 +33,7 @@ import sys
 import time
 import urllib.parse
 
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 DEFAULT_PORT = 8266
 PROJECT_FILE = "webota.project.json"
 # 잘못 바꾸면 원격으로 못 되돌리는 파일(USB 로만 복구) — 바꿀 때 한 번 더 묻는다.
@@ -118,6 +119,9 @@ class Client:
         _, par = self._req("GET", "/fs" + parent, {"sha": "1"} if sha else None)
         return [e for e in par["entries"] if e["path"] == path]
 
+    def history(self, n=10):
+        return self._req("GET", "/history", {"n": str(n)})[1]["history"]
+
     def sha(self, paths):
         return self._req("POST", "/sha", body={"paths": list(paths)})[1]["sha"]
 
@@ -170,8 +174,9 @@ class Client:
 
     # ── 배포 ──
     def deploy(self, files, delete=(), force=False, reset=True, wait=True, dry_run=False,
-               log=print):
-        """files: {원격 경로: 로컬 경로}. 해시가 다른 파일만 올린다.
+               log=print, label=None):
+        """files: {원격 경로: 로컬 경로}. 해시가 다른 파일만 올린다. label(예: 커밋)은 기기
+        이력(history)에 남는다 — 무엇이 언제 올라갔고 롤백됐는지 기기만 봐도 알 수 있게.
         반환: {"id", "changed": [...], "delete": [...], "result"}. 롤백되면 WebotaError."""
         remote_sha = self.sha(files.keys()) if files else {}
         changed = [r for r, l in sorted(files.items()) if remote_sha.get(r) != sha_of(l)]
@@ -200,8 +205,9 @@ class Client:
                           length=os.path.getsize(files[r]))
             items.append({"path": r, "sha": sha})
         self._req("POST", "/deploy/%s/commit" % did, {"force": "1"} if force else None,
-                  body={"files": items, "delete": delete, "reset": reset})
-        log("  커밋 %s — 파일 %d개, 삭제 %d개%s" % (did, len(items), len(delete),
+                  body={"files": items, "delete": delete, "reset": reset, "label": label})
+        log("  커밋 %s%s — 파일 %d개, 삭제 %d개%s" % (did, " [%s]" % label if label else "",
+                                                    len(items), len(delete),
                                                  " · 리셋" if reset else " (다음 부팅에 적용)"))
         if not (reset and wait):
             res["result"] = "committed"
@@ -304,6 +310,17 @@ def extra_remote(client, files, scopes):
     return sorted(extra)
 
 
+def git_label(root):
+    """프로젝트의 git describe(태그 없으면 해시) — 없으면 None."""
+    import subprocess
+    try:
+        out = subprocess.check_output(["git", "-C", root, "describe", "--tags", "--always",
+                                       "--dirty"], stderr=subprocess.DEVNULL)
+        return out.decode().strip() or None
+    except (OSError, subprocess.CalledProcessError):
+        return None
+
+
 def _confirm_critical(paths, yes):
     hit = [p for p in paths if p in CRITICAL]
     if not hit or yes:
@@ -356,6 +373,8 @@ def main(argv=None):
     s.add_argument("--dry-run", action="store_true")
     s.add_argument("--force", action="store_true", help="앱 가드(측정 중 등) 무시")
     s.add_argument("--no-reset", action="store_true", help="커밋만 — 다음 부팅에 적용")
+    s.add_argument("--label", help="이력에 남길 라벨(기본: 프로젝트 git describe --always --dirty)")
+    s = sub.add_parser("history"); s.add_argument("-n", type=int, default=10)
     s = sub.add_parser("token", help="새 토큰을 만들어 토큰 파일에 저장")
     s.add_argument("--overwrite", action="store_true")
     a = ap.parse_args(argv)
@@ -420,7 +439,13 @@ def main(argv=None):
             touched = [r for r in crit if rsha.get(r) != sha_of(files[r])] + dels
             if not a.dry_run and not _confirm_critical(touched, a.yes):
                 return 1
-            c.deploy(files, dels, force=a.force, reset=not a.no_reset, dry_run=a.dry_run)
+            c.deploy(files, dels, force=a.force, reset=not a.no_reset, dry_run=a.dry_run,
+                     label=a.label or git_label(project.get("_root", ".")))
+        elif a.cmd == "history":
+            for e in c.history(a.n):
+                print("%s  %-11s %-24s %s%s" % (e.get("at", ""), e.get("result", ""),
+                                               e.get("label") or "-", e.get("id", ""),
+                                               ("  — " + e["reason"]) if e.get("reason") else ""))
     except WebotaError as e:
         print("✗ %s" % e, file=sys.stderr)
         return 1
