@@ -190,16 +190,16 @@ def main():
     res = api.deploy(files, ["/old.py"], wait=False, log=lambda *_: None, label="v1+aaa")
     check("바뀐 파일만", sorted(res["changed"]) == ["/app.py", "/www/i.html"], res)
     check("커밋 후 리셋 요청", wait_resets(resets, 1))
-    check("pending 기록", wb.exists("/webota/pending.json"))
+    check("pending 기록", wb.exists("/.webota/pending.json"))
     check("적용 전에는 그대로", not wb.exists("/app.py") and wb.exists("/old.py"))
     wb.apply()                                             # ← 부팅
     check("부팅 적용", rd("/app.py") == b"V = 1\n" and rd("/www/i.html") == b"<p>1</p>")
     check("부팅 삭제", not wb.exists("/old.py"))
-    check("trial 시작", wb.in_trial() and not wb.exists("/webota/pending.json"))
+    check("trial 시작", wb.in_trial() and not wb.exists("/.webota/pending.json"))
     webota._trial = True
     webota.app_state = "running"
     webota._tick()                                         # confirm_s=0 → 곧바로 확인
-    last = wb.read_json("/webota/last.json")
+    last = wb.read_json("/.webota/last.json")
     check("확인 → last ok", last and last["result"] == "ok" and last["id"] == res["id"], last)
     check("라벨이 last 에", last.get("label") == "v1+aaa", last)
     check("unchanged", api.deploy(files, wait=False, log=lambda *_: None)["result"] == "unchanged")
@@ -219,7 +219,7 @@ def main():
     wb.apply()
     check("3회째 롤백 — 원래 내용", rd("/app.py") == b"V = 1\n")
     check("롤백 — 새 파일 제거", not wb.exists("/new.py"))
-    last = wb.read_json("/webota/last.json")
+    last = wb.read_json("/.webota/last.json")
     check("last rolled_back", last["result"] == "rolled_back" and last["id"] == res2["id"], last)
     h = api.history(5)
     check("history — ok 다음 rolled_back", [e["result"] for e in h] == ["ok", "rolled_back"]
@@ -238,8 +238,8 @@ def main():
     webota.run_app({"app": "app", "entry": "main"})
     check("시험 중 예외 → 롤백", rd("/app.py") == b"V = 1\n")
     check("롤백 후 리셋", len(resets) == n0 + 1)
-    check("crash.txt 기록", "깨진 판" in rd("/webota/crash.txt").decode())
-    check("last rolled_back(앱 예외)", wb.read_json("/webota/last.json")["id"] == res3["id"])
+    check("crash.txt 기록", "깨진 판" in rd("/.webota/crash.txt").decode())
+    check("last rolled_back(앱 예외)", wb.read_json("/.webota/last.json")["id"] == res3["id"])
     wr("/app.py", "raise RuntimeError('평시 고장')\n")
     sys.modules.pop("app", None)
     n0 = len(resets)
@@ -260,11 +260,11 @@ def main():
     webota.set_guard(lambda: (False, "측정 중"))
     check("가드 거부 → 423", raises(lambda: api.deploy(files, wait=False, log=lambda *_: None),
                                     "측정 중"))
-    check("가드 거부 — pending 없음", not wb.exists("/webota/pending.json"))
+    check("가드 거부 — pending 없음", not wb.exists("/.webota/pending.json"))
     check("reset 도 가드", raises(lambda: api.reset(), "423"))
     res4 = api.deploy(files, force=True, wait=False, log=lambda *_: None)
     wait_resets(resets, len(resets) + 1)
-    check("force 로 통과", res4["result"] == "committed" and wb.exists("/webota/pending.json"))
+    check("force 로 통과", res4["result"] == "committed" and wb.exists("/.webota/pending.json"))
     webota.set_guard(None)
     wb.apply()
     check("force 배포 적용", rd("/app.py") == b"V = 3\n")
@@ -303,7 +303,7 @@ def main():
     check("pkg/install — 리다이렉트+chunked 로 받아 커밋", r == "committed" and wait_resets(resets, n0 + 1))
     wb.apply()
     check("패키지 적용", rd("/app.py") == b"V = 20\n")
-    check("패키지 라벨 → trial", (wb.read_json("/webota/trial.json") or {}).get("label") == "v2.0.0+test")
+    check("패키지 라벨 → trial", (wb.read_json("/.webota/trial.json") or {}).get("label") == "v2.0.0+test")
     check("status.current = 패키지 라벨", api.status()["current"] == "v2.0.0+test")
     check("같은 패키지 재설치 → unchanged",
           api.pkg_install(base_url + "/t.wpk", wait=False, log=lambda *_: None) == "unchanged")
@@ -311,14 +311,14 @@ def main():
                                                          log=lambda *_: None), "다른 앱"))
     check("손상 패키지 거부", raises(lambda: api.pkg_install(base_url + "/bad.wpk", wait=False,
                                                        log=lambda *_: None), "해시 불일치"))
-    check("손상 — pending·stage 없음", not wb.exists("/webota/pending.json") and not wb.exists("/webota/stage"))
+    check("손상 — pending·stage 없음", not wb.exists("/.webota/pending.json") and not wb.exists("/.webota/stage"))
     webota.set_guard(lambda: (False, "측정 중"))
     check("패키지 설치도 가드", raises(lambda: api.pkg_install(base_url + "/other.wpk", force=False,
                                                          wait=False, log=lambda *_: None), "측정 중"))
     webota.set_guard(None)
 
     print("== 수동 변경 추적(WSL 세부 조정 ↔ 패키지)")
-    wb.remove("/webota/modified.json")
+    wb.remove("/.webota/modified.json")
     with open(lp, "w") as f:
         f.write("TWEAK = 1\n")
     api.put(lp, "/app.py")
@@ -410,10 +410,10 @@ def main():
     check("설정 디렉토리 · 앱 데이터 · /data 유지", wb.exists("/etc/net.json") and wb.exists("/logs/l.txt")
           and wb.exists("/data/keep.json"))
     check("webota 자신(CORE)·기기 설정 유지", wb.exists("/boot.py") and wb.exists("/webota.json"))
-    inst = wb.read_json("/webota/installed.json")
+    inst = wb.read_json("/.webota/installed.json")
     check("installed.json — 파일·설정·데이터", inst["files"] == sorted(files3) and inst["data"] == ["/data", "/logs"], inst)
     webota._trial = True; webota.app_state = "running"; webota._tick()
-    check("확인 → 백업(prev) 삭제", not wb.exists("/webota/prev"))
+    check("확인 → 백업(prev) 삭제", not wb.exists("/.webota/prev"))
     st = api.status()
     check("status.keep — 설정·데이터 목록", "/config.json" in st["keep"]["settings"] and "/logs" in st["keep"]["data"], st["keep"])
     wb.remove("/config.json")
@@ -437,7 +437,7 @@ def main():
     res = c2.deploy(files3, wait=False, log=lambda *_: None)
     check("WSL 배포 — 기기에 있는 설정은 올리지 않음", res["changed"] == ["/app.py"], res)
     wait_resets(resets, len(resets) + 1); wb.apply()
-    check("WSL 배포 — installed 에 설정 경로", wb.read_json("/webota/installed.json")["settings"] == ["/config.json"])
+    check("WSL 배포 — installed 에 설정 경로", wb.read_json("/.webota/installed.json")["settings"] == ["/config.json"])
     # 롤백하면 지운 코드 파일도 돌아온다
     wb.confirm()
     wr("/stray2.py", "y")
@@ -447,7 +447,7 @@ def main():
     check("설치 적용 — stray2 삭제", not wb.exists("/stray2.py"))
     wb.apply(); wb.apply(); wb.apply()
     check("롤백 — 지운 코드 파일 복원 · installed 원래대로", wb.exists("/stray2.py") and
-          wb.read_json("/webota/installed.json")["settings"] == ["/config.json"])
+          wb.read_json("/.webota/installed.json")["settings"] == ["/config.json"])
 
     print("== 선언은 앱 패키지만 · 선언이 없으면 전부 정리 · 설치 계획")
     check("기기 설정에는 data_dirs 가 없다", "data_dirs" not in webota.DEFAULTS)
@@ -467,14 +467,14 @@ def main():
     mj = json.dumps(m).encode()
     open(legacy, "wb").write(b"WPK1\n" + str(len(mj)).encode() + b"\n" + mj + raw[off + n:])
     pl = api.pkg_plan(base_url + "/legacy.wpk")
-    check("계획 — 선언 없음 표시", pl["declared"] is False and pl["keep_data"] == ["/webota"], pl["keep_data"])
+    check("계획 — 선언 없음 표시", pl["declared"] is False and pl["keep_data"] == ["/.webota"], pl["keep_data"])
     check("계획 — 지울 것에 코드·설정·데이터 전부", "/left.py" in pl["delete"] and "/data/legacy.json" in pl["delete"]
           and "/config.json" in pl["delete"] and "/www/i.html" in pl["delete"], pl["delete"])
     check("계획 — 지금 설정·데이터가 지워지는 것 표시", "/data/legacy.json" in pl["delete_kept_now"]
           and "/config.json" in pl["delete_kept_now"] and "/left.py" not in pl["delete_kept_now"])
     check("계획 — webota 자신·기기 설정은 안 지움", not any(x in pl["delete"] for x in
-          ("/boot.py", "/main.py", "/webota.py", "/webota.json")) and not any(x.startswith("/webota/") for x in pl["delete"]))
-    check("계획만 — 아무것도 안 바뀜", wb.exists("/left.py") and not wb.exists("/webota/pending.json"))
+          ("/boot.py", "/main.py", "/webota.py", "/webota.json")) and not any(x.startswith("/.webota/") for x in pl["delete"]))
+    check("계획만 — 아무것도 안 바뀜", wb.exists("/left.py") and not wb.exists("/.webota/pending.json"))
     n0 = len(resets)
     api.pkg_install(base_url + "/legacy.wpk", wait=False, log=lambda *_: None)
     wait_resets(resets, n0 + 1); wb.apply()
@@ -496,7 +496,7 @@ def main():
     wait_resets(resets, n0 + 1); wb.apply()
     check("새 선언만 보존", wb.exists("/store/s.json") and wb.exists("/config.json") and not wb.exists("/data/legacy.json"))
     st = api.status()["keep"]
-    check("보존 목록 = 새 판 선언만", st["data"] == ["/webota", "/store"] and st["settings"] == ["/webota.json", "/config.json"], st)
+    check("보존 목록 = 새 판 선언만", st["data"] == ["/.webota", "/store"] and st["settings"] == ["/webota.json", "/config.json"], st)
     wb.confirm()
 
     print("== 설정 · 데이터 강제 초기화")
@@ -521,7 +521,7 @@ def main():
     wb.confirm()
     pl = api.pkg_plan(base_url + "/p3.wpk", reset_data=True)
     check("계획 — 데이터 초기화: 선언된 데이터 전부(/webota 제외)", sorted(pl["delete_reset"]) ==
-          sorted(e for e in _all_under(root, ("/data", "/logs"))) and not any(x.startswith("/webota") for x in pl["delete"]), pl["delete_reset"])
+          sorted(e for e in _all_under(root, ("/data", "/logs"))) and not any(x.startswith("/.webota") for x in pl["delete"]), pl["delete_reset"])
     n0 = len(resets)
     r = api.pkg_install(base_url + "/p3.wpk", reset_data=True, wait=False, log=lambda *_: None)
     check("같은 판 + 데이터 초기화 → 커밋(초기화만)", r == "committed" and wait_resets(resets, n0 + 1))
@@ -677,6 +677,22 @@ def main():
     wb.confirm()
     d["app_id"] = saved_app; wb.write_json("/webota.json", d); webota.cfg["app_id"] = saved_app
 
+    print("== 상태 디렉토리 이름 · 옛 /webota 옮기기(0.8.4)")
+    base_name = wb.DIR.strip("/")
+    check("상태 디렉토리는 모듈 이름이 될 수 없다(MicroPython 은 디렉토리를 먼저 import)",
+          not base_name.isidentifier() and base_name.lstrip(".") in ("webota",))
+    wb.rmtree("/webota")
+    wr("/webota/last.json", '{"result": "ok"}')
+    keep = wb.read_json(wb.DIR + "/history.jsonl")
+    tmp_new = wb.DIR + ".hold"
+    wb.move(wb.DIR, tmp_new)                               # 새 디렉토리가 없는 기기처럼
+    wb.apply()
+    check("옛 /webota → /.webota 로 옮김", not wb.exists("/webota") and wb.read_json(wb.DIR + "/last.json") == {"result": "ok"})
+    wb.rmtree(wb.DIR); wb.move(tmp_new, wb.DIR)
+    wr("/webota/stale.json", "{}")
+    wb.apply()
+    check("둘 다 있으면 옛것 삭제", not wb.exists("/webota") and wb.exists(wb.DIR))
+
     print("== CLI")
     base = ["--host", "127.0.0.1:%d" % port, "--token", "t0k", "-y"]
     check("cli ls", cl.main(base + ["ls", "/data"]) == 0)
@@ -691,7 +707,7 @@ def main():
         with open("app.py", "w") as f:
             f.write("V = 4\n")
         check("cli deploy --dry-run", cl.main(base + ["deploy", "--dry-run"]) == 0
-              and not wb.exists("/webota/pending.json"))
+              and not wb.exists("/.webota/pending.json"))
     finally:
         os.chdir(cwd)
 
