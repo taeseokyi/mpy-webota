@@ -693,6 +693,20 @@ def main():
     wb.apply()
     check("둘 다 있으면 옛것 삭제", not wb.exists("/webota") and wb.exists(wb.DIR))
 
+    print("== 로그인 폼(크롬 비밀번호 관리자용)")
+    import http.client, urllib.parse
+    def login(pw):
+        cn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+        body = urllib.parse.urlencode({"username": "webota", "password": pw})
+        cn.request("POST", "/login", body=body, headers={"Content-Type": "application/x-www-form-urlencoded"})
+        r = cn.getresponse(); loc = r.getheader("Location"); r.read(); cn.close()
+        return r.status, loc
+    check("맞는 토큰 → 303 /?login=ok", login("t0k") == (303, "/?login=ok"))
+    check("틀린 토큰 → 303 /?login=bad", login("nope") == (303, "/?login=bad"))
+    ui = cl.Client("127.0.0.1:%d" % port, "")._req("GET", "/")[1]
+    check("화면 — 진짜 폼(action /login · username · current-password)", b'action="/login"' in ui
+          and b'autocomplete="username"' in ui and b'autocomplete="current-password"' in ui)
+
     print("== CLI")
     base = ["--host", "127.0.0.1:%d" % port, "--token", "t0k", "-y"]
     check("cli ls", cl.main(base + ["ls", "/data"]) == 0)
