@@ -35,7 +35,7 @@ import sys
 import time
 import urllib.parse
 
-VERSION = "0.5.1"
+VERSION = "0.5.2"
 DEFAULT_PORT = 8266
 PROJECT_FILE = "webota.project.json"
 # 잘못 바꾸면 원격으로 못 되돌리는 파일(USB 로만 복구) — 바꿀 때 한 번 더 묻는다.
