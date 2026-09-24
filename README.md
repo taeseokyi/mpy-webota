@@ -12,6 +12,8 @@ MicroPython 앱을 위한 **웹 API OTA와 원격 파일 관리** 모듈입니�
 |---|---|---|
 | `device/webota.py` | `/webota.py` | OTA 서버. 별도 스레드, 기본 포트 :8266 |
 | `device/webota_boot.py` | `/webota_boot.py` | 부팅 때 배포 적용, 롤백, 확인 |
+| `device/webota_pkg.py` | `/webota_pkg.py` | 배포 패키지 목록 조회와 설치(HTTPS 클라이언트 포함) |
+| `device/webota_ui.html` | `/webota_ui.html` | 설치 화면(`http://<기기>:8266/`) |
 | `device/boot.py` | `/boot.py` | `webota_boot.apply()` 한 줄 |
 | `device/main.py` | `/main.py` | 범용 런처: WiFi 접속, OTA 서버, 앱 실행 |
 | `/webota.json` | `/webota.json` | 설정. 형식은 `device/webota.example.json` 참고 |
@@ -37,11 +39,33 @@ MicroPython 앱을 위한 **웹 API OTA와 원격 파일 관리** 모듈입니�
 ```bash
 python3 client/webota.py --host 192.168.0.50 token      # ~/.config/webota/192.168.0.50.token
 # /webota.json 에 그 토큰을 넣는다 (webota.example.json 참고)
-mpremote fs cp device/webota.py device/webota_boot.py device/boot.py device/main.py webota.json :
+mpremote fs cp device/webota.py device/webota_boot.py device/webota_pkg.py device/webota_ui.html \
+               device/boot.py device/main.py webota.json :
 mpremote fs cp app.py :          # 앱
 mpremote reset
 python3 client/webota.py --host 192.168.0.50 status
 ```
+
+## 배포 패키지 (.wpk): 기기 화면에서 골라 바로 설치
+앱 저장소가 판마다 패키지를 만들어 **GitHub Releases**에 올려 두면, webota를 설치한 기기의 화면(`http://<기기>:8266/`)에서 목록을 보고 골라 설치합니다. 기기가 직접 내려받아 해시를 검증하고, 바뀐 파일만 배포 트랜잭션으로 넘깁니다. 그 뒤 재부팅, 시험, 확인 또는 롤백은 다른 배포와 같습니다.
+
+- **형식** `webota-pkg/1`: `WPK1\n`, 매니페스트 길이, 매니페스트 JSON, 파일 내용을 차례로 이어 붙인 것입니다. 기기가 스트리밍으로 풀 수 있게 압축은 하지 않습니다.
+  매니페스트: `{format, app_id, name, version, label, built_at, webota, files:[{path,size,sha}], delete}`
+- **만들기**: `webota.py pack --app-id myapp --version 1.2.0 --out dist/`(프로젝트 `map` 기준). 빌드 단계가 있으면 라이브러리 `build_package(files, out, app_id, version, label)`를 씁니다.
+- **올리기**: `gh release create v1.2.0 dist/myapp-v1.2.0.wpk`. 판마다 릴리스가 쌓입니다.
+- **기기 설정** `/webota.json`:
+  ```json
+  {"app_id": "myapp", "packages": {"github": "owner/repo"}}
+  ```
+  `"asset": "*.wpk"`(기본값)와 `"max": 15`를 지정할 수 있습니다. 자체 호스팅은 `{"index": "http://.../index.json"}`(`[{tag,name,url,size,published}]`)으로 합니다.
+- **안전장치**:
+  - `app_id`가 다른 패키지는 거부합니다.
+  - 해시가 맞지 않으면 아무것도 바꾸지 않습니다.
+  - 앱 가드(측정 중 등)를 내려받기 전에 먼저 확인합니다.
+  - 화면의 '고급'에서 가드 검사를 무시할 수 있습니다.
+- **CLI**: `webota.py pkg-list`, `webota.py pkg-install <URL>`.
+- ★공개 저장소 전제입니다(토큰 없이 내려받음). 기기에 CA 묶음이 없어 **TLS 인증서를 검증하지 않습니다.** 파일 무결성은 매니페스트 해시로 확인하지만, 매니페스트도 같은 출처에서 오므로 경로 위조까지 막지는 못합니다.
+- ★옛 판 패키지를 설치하면 그 판에 들어 있는 webota로 내려갈 수 있습니다. 패키지 기능이 없는 판(webota < 0.3.0)으로 내려가면 이 화면도 사라집니다.
 
 ## 클라이언트
 ```bash
@@ -88,6 +112,9 @@ c.deploy({"/app.py": "build/app.py", "/www/i.html.gz": "build/i.html.gz"})
 | `POST /deploy/<id>/commit {files,delete,reset,label}` | 확정. 다음 부팅에 적용. `label`은 이력에 남음 |
 | `DELETE /deploy` | 트랜잭션 폐기 |
 | `POST /reset` | 리셋 |
+| `GET /` | 설치 화면(이 페이지만 토큰 없이 열림. API 호출은 화면에서 입력한 토큰으로) |
+| `GET /pkg/list[?fresh=1]` | 패키지 목록과 현재 판 |
+| `POST /pkg/install {url,force}` | 기기가 패키지를 내려받아 검증하고 배포 |
 
 **앱 가드**: 앱이 `webota.set_guard(fn)`으로 `fn() -> (ok, msg)`를 등록하면, `commit`과 `reset` 전에 이 함수를 부릅니다. 거부하면 423을 돌려줍니다(예: 측정 중 배포 금지). `?force=1`(CLI `--force`)로 무시할 수 있습니다. 파일 API는 가드를 거치지 않습니다.
 

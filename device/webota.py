@@ -21,6 +21,9 @@
 #                                         "label":"v1.2.0+abc1234"}   ← 라벨은 이력에 남는다
 #   DELETE /deploy                       진행 중 트랜잭션 폐기
 #   POST   /reset
+#   GET    /                            설치 화면(webota_ui.html — 토큰은 화면에서 입력, 이 페이지만 무인증)
+#   GET    /pkg/list                    배포 패키지 목록(/webota.json 의 packages 출처)
+#   POST   /pkg/install {"url","force"} 패키지를 기기가 직접 내려받아 검증 → 배포(커밋·리셋)
 #   (commit · reset 은 앱이 set_guard() 로 등록한 가드를 거친다 — ?force=1 로 무시)
 #
 # 경로 제한은 없다: boot.py · main.py · 데이터 파일까지 전부 다룬다(설계 결정).
@@ -31,11 +34,11 @@ import time
 
 import webota_boot as wb
 
-VERSION = "0.2.0"
+VERSION = "0.3.0"
 CONFIG = "/webota.json"
 DEFAULTS = {"port": 8266, "app": "app", "entry": "main", "wifi_file": None,
             "wifi_keys": ["ssid", "pass"], "wifi_timeout_s": 20, "confirm_s": 90,
-            "token": None}
+            "token": None, "app_id": None, "packages": None, "ui": "/webota_ui.html"}
 CHUNK = 2048
 MAX_JSON = 64 * 1024
 
@@ -268,7 +271,8 @@ def status():
           "trial": wb.read_json(wb.DIR + "/trial.json"),
           "pending": wb.exists(wb.DIR + "/pending.json"),
           "last": wb.read_json(wb.DIR + "/last.json"),
-          "deploy_id": _deploy_id, "confirm_s": cfg.get("confirm_s")}
+          "deploy_id": _deploy_id, "confirm_s": cfg.get("confirm_s"),
+          "app_id": cfg.get("app_id"), "current": _current()}
     try:
         import gc
         st["mem_free"] = gc.mem_free()
@@ -335,6 +339,88 @@ def _fs(conn, method, path, q, rf, clen):
     return _err(conn, "405 Method Not Allowed", method)
 
 
+def _commit(did, paths, deletes, label, reset, force):
+    """스테이징된 배포를 확정한다 — pending 기록 후(reset 이면) 리셋 예약. (ok, 상태, 메시지)."""
+    global _reset_pending
+    if not paths and not deletes:
+        return False, "400 Bad Request", "바꿀 것이 없다"
+    ok, msg = _check_guard(force)
+    if not ok:
+        return False, "423 Locked", msg or "앱 가드가 거부"
+    wb.write_json(wb.DIR + "/pending.json", {"id": did, "label": label, "files": paths,
+                                             "delete": deletes, "at": wb.stamp()})
+    if reset:
+        _reset_pending = True
+    return True, "200 OK", ""
+
+
+def _current():
+    """지금 기기에 올라가 있는 판의 라벨 — 시험 중이면 그 판, 아니면 마지막 확인된 판."""
+    t = wb.read_json(wb.DIR + "/trial.json")
+    if t:
+        return t.get("label")
+    for e in reversed(wb.history(50)):
+        if e.get("result") == "ok":
+            return e.get("label")
+    return None
+
+
+def _pkg(conn, method, rest, q, rf, clen):
+    global _deploy_id
+    import webota_pkg as pkg
+    if rest == "list" and method == "GET":
+        lst, err = pkg.list_packages(cfg, now=uptime_s() if q.get("fresh") != "1" else None)
+        return _json(conn, {"ok": err is None, "err": err, "packages": lst or [],
+                            "current": _current(), "app_id": cfg.get("app_id")})
+    if rest == "install" and method == "POST":
+        body = _read_json_body(rf, clen)
+        if not body or not body.get("url"):
+            return _err(conn, "400 Bad Request", "url 이 필요하다")
+        force = bool(body.get("force")) or q.get("force") == "1"
+        ok, msg = _check_guard(force)                  # 내려받기 전에 먼저 거른다(헛수고 방지)
+        if not ok:
+            return _err(conn, "423 Locked", msg or "앱 가드가 거부")
+        stage = wb.DIR + "/stage/files"
+        wb.rmtree(wb.DIR + "/stage")
+        wb.makedirs(stage)
+        did = "%d-%d" % (time.time(), _ticks() % 100000)
+        _deploy_id = None                              # 진행 중이던 수동 배포는 무효
+        try:
+            ok, msg, man, changed = pkg.install(body["url"], cfg, stage, sha_file, force=force)
+        except Exception as e:
+            ok, msg, man, changed = False, "내려받기 실패: %r" % e, None, []
+        if not ok:
+            wb.rmtree(wb.DIR + "/stage")
+            return _err(conn, "400 Bad Request", msg)
+        deletes = [d for d in (man.get("delete") or []) if _norm(d) and wb.exists(d)]
+        label = man.get("label") or man.get("version")
+        if not changed and not deletes:
+            wb.rmtree(wb.DIR + "/stage")
+            return _json(conn, {"ok": True, "result": "unchanged", "label": label})
+        ok, st, msg = _commit(did, changed, deletes, label, True, force)
+        if not ok:
+            wb.rmtree(wb.DIR + "/stage")
+            return _err(conn, st, msg)
+        return _json(conn, {"ok": True, "result": "committed", "id": did, "label": label,
+                            "files": len(changed), "delete": len(deletes)})
+    return _err(conn, "404 Not Found", "pkg/" + rest)
+
+
+def _ui(conn):
+    path = cfg.get("ui") or "/webota_ui.html"
+    if not wb.exists(path):
+        return _send(conn, "200 OK", "<p>webota %s — 설치 화면 파일이 없다(%s)</p>"
+                     % (VERSION, path), "text/html; charset=utf-8")
+    size = os.stat(wb.p(path))[6]
+    _send(conn, "200 OK", b"", "text/html; charset=utf-8", size)
+    with open(wb.p(path), "rb") as f:
+        while True:
+            b = f.read(CHUNK)
+            if not b:
+                break
+            _sendall(conn, b)
+
+
 def _deploy(conn, method, rest, q, rf, clen):
     global _deploy_id, _reset_pending
     stage = wb.DIR + "/stage/files"
@@ -364,20 +450,14 @@ def _deploy(conn, method, rest, q, rf, clen):
             if sha_file(stage + path) != (f.get("sha") or "").lower():
                 return _err(conn, "409 Conflict", "스테이징 파일이 없거나 해시가 다르다: " + path)
             paths.append(path)
-        if not paths and not deletes:
-            return _err(conn, "400 Bad Request", "바꿀 것이 없다")
-        ok, msg = _check_guard(q.get("force") == "1")
-        if not ok:
-            return _err(conn, "423 Locked", msg or "앱 가드가 거부")
         label = body.get("label")
-        wb.write_json(wb.DIR + "/pending.json", {"id": _deploy_id, "label": label, "files": paths,
-                                                 "delete": deletes, "at": wb.stamp()})
         reset = body.get("reset", True)
+        ok, st, msg = _commit(_deploy_id, paths, deletes, label, reset, q.get("force") == "1")
+        if not ok:
+            return _err(conn, st, msg)
         _json(conn, {"ok": True, "id": _deploy_id, "label": label, "files": len(paths),
                      "delete": len(deletes), "reset": bool(reset)})
         _deploy_id = None
-        if reset:
-            _reset_pending = True
         return
     if method == "PUT" and sub:
         path = _norm(sub)
@@ -416,6 +496,8 @@ def _handle(conn):
                 clen = 0
         elif k == "x-token":
             token = v.strip()
+    if raw_path in ("/", "/ui") and method == "GET":
+        return _ui(conn)                           # 화면 자체는 비밀이 없다 — API 는 토큰
     want = cfg.get("token")
     if not want:
         return _err(conn, "403 Forbidden", "토큰이 설정되지 않았다(/webota.json) — 모든 요청 거부")
@@ -445,6 +527,8 @@ def _handle(conn):
         return _json(conn, {"ok": True, "sha": out})
     if raw_path == "/deploy" or raw_path.startswith("/deploy/"):
         return _deploy(conn, method, raw_path[8:], q, rf, clen)
+    if raw_path.startswith("/pkg/"):
+        return _pkg(conn, method, raw_path[5:], q, rf, clen)
     if raw_path == "/reset" and method == "POST":
         ok, msg = _check_guard(q.get("force") == "1")
         if not ok:

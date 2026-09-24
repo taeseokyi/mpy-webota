@@ -64,6 +64,43 @@ def wait_resets(resets, n, secs=3.0):
     return len(resets) >= n
 
 
+def serve_dir(d):
+    """패키지 출처 흉내 — /redir/<x> 는 302, /chunked/<x> 는 chunked 로 준다."""
+    import http.server
+    import threading
+
+    class H(http.server.SimpleHTTPRequestHandler):
+        def __init__(self, *a, **kw):
+            super().__init__(*a, directory=d, **kw)
+
+        def log_message(self, *a):
+            pass
+
+        def do_GET(self):
+            if self.path.startswith("/redir/"):
+                self.send_response(302)
+                self.send_header("Location", "/chunked/" + self.path[7:])
+                self.end_headers()
+                return
+            if self.path.startswith("/chunked/"):
+                data = open(os.path.join(d, self.path[9:]), "rb").read()
+                self.protocol_version = "HTTP/1.1"
+                self.send_response(200)
+                self.send_header("Transfer-Encoding", "chunked")
+                self.send_header("Connection", "close")
+                self.end_headers()
+                for i in range(0, len(data), 1000):
+                    part = data[i:i + 1000]
+                    self.wfile.write(b"%x\r\n" % len(part) + part + b"\r\n")
+                self.wfile.write(b"0\r\n\r\n")
+                return
+            return super().do_GET()
+
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv.server_address[1]
+
+
 def free_port():
     s = socket.socket()
     s.bind(("127.0.0.1", 0))
@@ -227,6 +264,49 @@ def main():
     print("== 트랜잭션 id")
     check("begin 없이 커밋 거부", raises(lambda: api._req("POST", "/deploy/zzz/commit", body={}),
                                        "409"))
+
+    print("== 배포 패키지(.wpk)")
+    pk = os.path.join(local, "pkgs")
+    os.makedirs(pk)
+    with open(os.path.join(src, "app.py"), "w") as f:
+        f.write("V = 20\n")
+    files, _ = cl.map_files(project)
+    man = cl.build_package(files, os.path.join(pk, "t.wpk"), "testapp", "2.0.0", "v2.0.0+test")
+    check("pack — 매니페스트", cl.read_manifest(os.path.join(pk, "t.wpk"))["label"] == "v2.0.0+test"
+          and len(man["files"]) == len(files))
+    bad = bytearray(open(os.path.join(pk, "t.wpk"), "rb").read())
+    bad[-3] ^= 0xFF
+    open(os.path.join(pk, "bad.wpk"), "wb").write(bytes(bad))
+    cl.build_package(files, os.path.join(pk, "other.wpk"), "otherapp", "9.0.0")
+    hp = serve_dir(pk)
+    base_url = "http://127.0.0.1:%d" % hp
+    with open(os.path.join(pk, "index.json"), "w") as f:
+        json.dump([{"tag": "v2.0.0", "name": "v2.0.0", "url": base_url + "/redir/t.wpk", "size": 1}], f)
+    webota.cfg["packages"] = {"index": base_url + "/index.json"}
+    webota.cfg["app_id"] = "testapp"
+    lst = api.pkg_list(fresh=True)
+    check("pkg/list — index 출처", lst["ok"] and lst["packages"][0]["tag"] == "v2.0.0", lst)
+    wr("/webota_ui.html", open(os.path.join(HERE, "..", "device", "webota_ui.html"), "rb").read())
+    ui = cl.Client("127.0.0.1:%d" % port, "")._req("GET", "/")[1]
+    check("ui — 토큰 없이 설치 화면", b"/pkg/install" in ui)
+    n0 = len(resets)
+    r = api.pkg_install(base_url + "/redir/t.wpk", wait=False, log=lambda *_: None)
+    check("pkg/install — 리다이렉트+chunked 로 받아 커밋", r == "committed" and wait_resets(resets, n0 + 1))
+    wb.apply()
+    check("패키지 적용", rd("/app.py") == b"V = 20\n")
+    check("패키지 라벨 → trial", (wb.read_json("/webota/trial.json") or {}).get("label") == "v2.0.0+test")
+    check("status.current = 패키지 라벨", api.status()["current"] == "v2.0.0+test")
+    check("같은 패키지 재설치 → unchanged",
+          api.pkg_install(base_url + "/t.wpk", wait=False, log=lambda *_: None) == "unchanged")
+    check("다른 앱 패키지 거부", raises(lambda: api.pkg_install(base_url + "/other.wpk", wait=False,
+                                                         log=lambda *_: None), "다른 앱"))
+    check("손상 패키지 거부", raises(lambda: api.pkg_install(base_url + "/bad.wpk", wait=False,
+                                                       log=lambda *_: None), "해시 불일치"))
+    check("손상 — pending·stage 없음", not wb.exists("/webota/pending.json") and not wb.exists("/webota/stage"))
+    webota.set_guard(lambda: (False, "측정 중"))
+    check("패키지 설치도 가드", raises(lambda: api.pkg_install(base_url + "/other.wpk", force=False,
+                                                         wait=False, log=lambda *_: None), "측정 중"))
+    webota.set_guard(None)
 
     print("== CLI")
     base = ["--host", "127.0.0.1:%d" % port, "--token", "t0k", "-y"]
