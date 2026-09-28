@@ -155,7 +155,7 @@ webota.py signing-key init|show|publish · pack · device-config · usb-install 
 
 ## 시험
 ```bash
-python3 tests/test_webota.py     # CPython 에서 실제 서버 · 서명 · 변조 거부 · 롤백 · WiFi 까지(76 항목)
+python3 tests/test_webota.py     # CPython 에서 실제 서버 · 서명 · 변조 거부 · 롤백 · WiFi · GitHub 확인까지(124 항목)
 ```
 MicroPython 실기에서만 드러나는 것들도 있었습니다.
 - 디렉토리 이름이 import와 충돌했습니다(상태 디렉토리를 `/.webota`로 옮김).
