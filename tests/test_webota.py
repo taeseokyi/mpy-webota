@@ -282,6 +282,17 @@ def main():
     check("공개키는 암호 없이(.pub.json)", cl.pubkey_record(kp) == rec_p)
     del os.environ[cl.PASS_ENV]
     cl._pass_cache.clear()
+    import io
+    tty0, stdin0 = cl.TTY, sys.stdin
+    cl.TTY, sys.stdin = os.path.join(local, "no-tty"), io.StringIO("")
+    try:
+        check("물을 터미널이 없으면 한 줄 오류(Traceback · 암호 노출 없이)",
+              raises(lambda: cl.sign(b"m", kp), "터미널이 없다"))
+        check("패키지 만들기도 같은 오류(pack 은 ✗ 한 줄로 끝난다)",
+              raises(lambda: cl.build_package({"/a.py": srcfile("a.py", "A = 1\n")}, os.path.join(local, "x.wpk"),
+                                              "a", "1", sign_key=kp), "터미널이 없다"))
+    finally:
+        cl.TTY, sys.stdin = tty0, stdin0
 
     print("== 서명된 패키지 설치 · 바뀐 파일만 · 확인")
     files = {"/app.py": srcfile("app.py", "V = 1\n"), "/lib.py": srcfile("lib.py", "L = 1\n"),

@@ -34,7 +34,7 @@ import sys
 import time
 import urllib.parse
 
-VERSION = "1.2.1"
+VERSION = "1.2.2"
 DEFAULT_PORT = 8266
 PROJECT_FILE = "webota.project.json"
 SIGNING_KEY = "~/.config/webota/signing-key.pem"       # 개인키 — 기기로 가지 않는다
@@ -79,18 +79,27 @@ PASS_ENV = "WEBOTA_SIGN_PASS"          # 무인 빌드용(권하지 않는다) �
 _pass_cache = {}
 
 
+TTY = "/dev/tty"
+try:
+    import termios
+except ImportError:                             # 윈도
+    termios = None
+
+
 def _read_secret(prompt):
     """터미널에서 화면에 보이지 않게 한 줄 — ★바이트로 읽는다. getpass 는 UTF-8 로만 읽다가 한글
     입력 상태나 다른 인코딩의 터미널에서 UnicodeDecodeError 로 죽었다(2026-09-25 실측).
-    ASCII 가 아니면 None(다시 묻게)."""
+    ASCII 가 아니면 None(다시 묻게). ★물을 터미널이 없으면(Claude Code 의 ! · CI · 파이프) WebotaError —
+    getpass 는 그때 암호를 화면에 보이며 받거나 EOFError 로 죽었다(2026-09-28 실측)."""
     try:
-        import termios
-        with open("/dev/tty", "r+b", buffering=0) as tty:
-            tty.write(prompt.encode("utf-8"))
+        if termios is None:
+            raise OSError("termios 없음")
+        with open(TTY, "r+b", buffering=0) as tty:
             fd = tty.fileno()
             old = termios.tcgetattr(fd)
             new = termios.tcgetattr(fd)
             new[3] &= ~termios.ECHO
+            tty.write(prompt.encode("utf-8"))
             try:
                 termios.tcsetattr(fd, termios.TCSAFLUSH, new)
                 buf = b""
@@ -102,12 +111,21 @@ def _read_secret(prompt):
             finally:
                 termios.tcsetattr(fd, termios.TCSAFLUSH, old)
                 tty.write(b"\n")
-    except (ImportError, OSError):
+    except (OSError,) + ((termios.error,) if termios else ()):
+        if not sys.stdin.isatty():
+            raise WebotaError(NO_TTY)
         import getpass                              # /dev/tty 가 없는 환경(윈도 등)
-        buf = getpass.getpass(prompt).encode("utf-8", "replace")
+        try:
+            buf = getpass.getpass(prompt).encode("utf-8", "replace")
+        except EOFError:
+            raise WebotaError(NO_TTY)
     if any(b < 0x20 or b > 0x7e for b in buf):
         return None
     return buf.decode("ascii")
+
+
+NO_TTY = ("서명 키 암호를 물을 터미널이 없다 — 일반 터미널에서 실행한다"
+          " (Claude Code 의 ! 로는 안 된다. 무인 빌드라면 %s 환경변수 — 권하지 않는다)" % PASS_ENV)
 
 
 def _askpass(path, confirm=False):
