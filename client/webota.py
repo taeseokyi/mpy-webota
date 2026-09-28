@@ -28,12 +28,13 @@ import hashlib
 import http.client
 import json
 import os
+import re
 import secrets
 import sys
 import time
 import urllib.parse
 
-VERSION = "1.2.0"
+VERSION = "1.2.1"
 DEFAULT_PORT = 8266
 PROJECT_FILE = "webota.project.json"
 SIGNING_KEY = "~/.config/webota/signing-key.pem"       # 개인키 — 기기로 가지 않는다
@@ -576,6 +577,81 @@ def _owners_arg(a):
     return a.github_owner or None
 
 
+_LOGIN = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}$")
+
+
+def check_logins(logins):
+    bad = [x for x in logins if not _LOGIN.match(x)]
+    if bad:
+        raise WebotaError("GitHub 계정 이름이 아니다: %s" % ", ".join(bad))
+    return list(logins)
+
+
+def gh_login():
+    """이 PC 의 gh CLI 에 로그인된 GitHub 계정 — 없으면 None."""
+    import shutil
+    import subprocess
+    if not shutil.which("gh"):
+        return None
+    try:
+        out = subprocess.check_output(["gh", "api", "user", "--jq", ".login"], stderr=subprocess.DEVNULL, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    login = out.decode("utf-8", "replace").strip()
+    return login if _LOGIN.match(login) else None
+
+
+def choose_owners(project, owners_arg, interactive, ask=input, login=gh_login, log=print):
+    """usb-install 에서 이 기기를 승인할 GitHub 계정을 정한다.
+    ★인자가 없을 때 프로젝트 파일의 owners(패키지 작성자)를 그대로 쓰면, 다른 사람 기기가 작업마다
+    작성자의 승인을 기다리게 된다. 그래서 기본은 **설치하는 사람의 계정**(gh 로그인)이고,
+    프로젝트 owners 를 쓰려면 명시적으로 고른다. 돌려주는 값은 device_config 의 github_owners."""
+    if owners_arg is not None:              # --github-owner · --no-github-auth
+        return check_logins(owners_arg)
+    ga = (project.get("device") or {}).get("github_auth") or {}
+    if not ga.get("client_id"):
+        return None                         # GitHub 확인을 쓰지 않는 프로젝트
+    proj = list(ga.get("owners") or [])
+    me = login()
+    if me and me.lower() in [o.lower() for o in proj]:
+        default = proj                      # 작성자 자신의 기기 — 예전과 같다
+    else:
+        default = [me] if me else None
+    if not interactive:
+        if default is None:
+            raise WebotaError("이 기기를 승인할 GitHub 계정을 모른다 — --github-owner <내 계정> 또는 --no-github-auth"
+                              " (프로젝트 파일의 owners: %s)" % (", ".join(proj) or "-"))
+        return default
+    log("GitHub 확인: 이 기기에서 설치 · 정리 · WiFi 변경을 누가 승인할까요?")
+    log("  프로젝트 파일의 owners: %s (패키지 작성자)" % (", ".join(proj) or "-"))
+    log("  계정(쉼표로 여러 개) · project = 프로젝트 owners 그대로 · none = 확인 끄기")
+    while True:
+        try:
+            r = ask("승인할 GitHub 계정%s: " % (" [%s]" % ", ".join(default) if default else "")).strip()
+        except UnicodeDecodeError:          # 한글 입력 상태
+            log("  영문으로 입력하십시오.")
+            continue
+        except EOFError:
+            r = ""
+            if default is None:
+                raise WebotaError("승인할 GitHub 계정이 필요하다 — --github-owner 또는 --no-github-auth")
+        if not r:
+            if default:
+                return default
+            continue
+        if r.lower() == "project":
+            if proj:
+                return proj
+            log("  프로젝트 파일에 owners 가 없습니다.")
+            continue
+        if r.lower() == "none":
+            return []
+        try:
+            return check_logins([x.strip() for x in r.split(",") if x.strip()])
+        except WebotaError as e:
+            log("  " + str(e))
+
+
 def publish_key(project_file, rec):
     """내 공개키를 프로젝트 파일 device.pkg_keys 에 넣는다(같은 id 가 있으면 바꿈)."""
     with open(project_file, encoding="utf-8") as f:
@@ -657,6 +733,7 @@ def main(argv=None):
     s.add_argument("--no-reset", action="store_true")
     s.add_argument("--github-owner", action="append", help="이 기기를 승인할 GitHub 계정(여러 번) — 프로젝트 파일의 owners 대신")
     s.add_argument("--no-github-auth", action="store_true", help="GitHub 확인을 심지 않는다")
+    s.add_argument("-y", "--yes", action="store_true", dest="yes_sub", help="묻지 않는다(승인 계정은 gh 로그인 계정)")
     s = sub.add_parser("token", help="새 기기 토큰을 만들어 토큰 파일에 저장")
     s.add_argument("--overwrite", action="store_true")
     a = ap.parse_args(argv)
@@ -721,8 +798,9 @@ def main(argv=None):
         if a.cmd == "usb-install":
             host = a.host or os.environ.get("WEBOTA_HOST") or project.get("host") or "default"
             tok = a.token or ensure_token(a.token_file or project.get("token_file") or token_path(host))
+            owners = choose_owners(project, _owners_arg(a), interactive=sys.stdin.isatty() and not a.yes)
             rc = usb_install(a.port, project, tok, dry_run=a.dry_run, reset=not a.no_reset,
-                             github_owners=_owners_arg(a))
+                             github_owners=owners)
             if rc == 0 and not a.dry_run:
                 print("완료 — 기기가 부팅하면 설치 화면(http://<기기>:8266/)에서 판을 골라 설치한다.\n"
                       "  이 기기의 토큰: %s (설치 화면 토큰 칸에 넣고 '저장' — 크롬에 저장된다)"

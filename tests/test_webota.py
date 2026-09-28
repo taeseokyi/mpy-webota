@@ -650,6 +650,26 @@ def main():
     check("--github-owner 인데 client_id 없음 → 거부",
           raises(lambda: cl.device_config({"device": {}}, "T", [rec], github_owners=["me"]), "client_id"))
 
+    print("== usb-install: 승인할 GitHub 계정 고르기")
+    quiet = lambda *_: None
+    def asker(*answers):
+        it = iter(answers)
+        return lambda _p: next(it)
+    co = lambda owners_arg, interactive, ask=None, me=None: cl.choose_owners(
+        pga, owners_arg, interactive, ask=ask or asker(), login=lambda: me, log=quiet)
+    check("--github-owner 가 먼저", co(["bob"], True) == ["bob"])
+    check("--no-github-auth → 빈 목록", co([], True) == [])
+    check("이상한 계정 이름 거부", raises(lambda: co(["a b"], False), "계정 이름"))
+    check("client_id 없는 프로젝트 → 정하지 않음", cl.choose_owners({"device": {}}, None, True, login=lambda: "x") is None)
+    check("무인 · gh 로그인 → 설치하는 사람 계정(작성자 아님)", co(None, False, me="alice") == ["alice"])
+    check("무인 · gh 로그인이 작성자 → 프로젝트 owners", co(None, False, me="Author") == ["author"])
+    check("무인 · 계정 모름 → 거부(작성자 계정으로 몰래 두지 않음)", raises(lambda: co(None, False), "--github-owner"))
+    check("묻기 · Enter → gh 계정", co(None, True, asker(""), me="alice") == ["alice"])
+    check("묻기 · 여러 계정", co(None, True, asker("bob, carol")) == ["bob", "carol"])
+    check("묻기 · project", co(None, True, asker("project"), me="alice") == ["author"])
+    check("묻기 · none", co(None, True, asker("none"), me="alice") == [])
+    check("묻기 · 기본 없으면 Enter 는 다시 물음 · 잘못된 이름도", co(None, True, asker("", "a b", "bob")) == ["bob"])
+
     print("== 다른 사람 기기: 프로젝트 파일의 공개키 · usb-install · publish")
     projdir = os.path.join(local, "proj")
     os.makedirs(projdir)

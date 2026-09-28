@@ -51,7 +51,8 @@ MicroPython 앱을 위한 **서명된 배포 패키지 설치 모듈**입니다.
 "github_auth": {"client_id": "<OAuth App Client ID>", "owners": ["my-github-login"]}
 ```
 - `client_id`: GitHub → Settings → Developer settings → **OAuth Apps** → New OAuth App에서 만들고 **Enable Device Flow**를 켭니다. Homepage/Callback URL은 아무 주소나 됩니다. Client ID는 공개 정보이고, Client Secret은 쓰지 않습니다.
-- 다른 사람 기기: `usb-install --github-owner <그 사람의 계정>`으로 승인할 계정을 바꿉니다(같은 client_id를 씁니다). `--no-github-auth`는 확인을 끕니다.
+- **OAuth App은 하나면 됩니다.** Client ID가 프로젝트 파일에 들어 있으므로 저장소를 받은 사람은 모두 같은 App을 씁니다. 다른 사람은 자기 GitHub 계정만 있으면 됩니다.
+- 다른 사람 기기: `usb-install`은 승인할 계정을 묻습니다. 기본값은 **설치하는 사람의 계정**(`gh`에 로그인된 계정)이고, 프로젝트 파일의 `owners`(작성자)는 `project`라고 답해야만 씁니다. 그렇지 않으면 다른 사람 기기가 작업마다 작성자의 승인을 기다리게 됩니다. 묻지 않으려면 `--github-owner <계정>`(여러 번), 끄려면 `--no-github-auth`를 씁니다.
 - ★기기가 GitHub에 닿아야 작업할 수 있습니다. 인터넷이 끊기면 USB로 합니다.
 
 ## 원격으로 할 수 있는 것 (설치 화면 `:8266/`, 기기 토큰 필요)
@@ -111,8 +112,10 @@ git commit -am "공개키 공개" && git push           # 저장소에 공개키
 ```bash
 git clone https://github.com/<나>/<앱>            # 앱 저장소(webota 기기 파일이 vendored 돼 있다)
 cd <앱>
-python3 tools/webota.py usb-install --port COM5   # webota + 기기 설정(내 공개키·출처·그 사람의 토큰)만 올린다
+python3 tools/webota.py usb-install --port COM5 --github-owner <내 GitHub 계정>
+# webota + 기기 설정(작성자의 공개키·출처·내 토큰·내 GitHub 계정)만 올린다
 ```
+- **GitHub 확인은 설치한 사람이 합니다.** `--github-owner`로 자기 계정을 적습니다. 여럿이 같이 쓰는 기기라면 여러 번 적습니다. 빼면 승인할 계정을 묻는데, `gh`에 로그인되어 있으면 그 계정이 기본값입니다. 묻지 않는 환경(`-y`, 파이프)에서 계정을 알 수 없으면 설치를 거부합니다. GitHub 계정이 없다면 `--no-github-auth`로 끕니다.
 - **앱은 USB로 올리지 않습니다.** 기기가 부팅하면 설치 화면 `http://<기기>:8266/`에서 판을 골라 설치합니다. 첫 설치가 그 앱을 받아들입니다.
 - WiFi는 설정용 AP(`webota-XXXX`)에 붙어 설정 화면에서 정합니다.
 - **기기 토큰은 설치한 사람의 것입니다.** 그 사람의 PC에서 새로 만들어지므로(`~/.config/webota/…token`), 그 기기의 설치 화면은 그 사람만 씁니다. 토큰 칸에서 '저장'하면 크롬에 저장됩니다.
@@ -134,6 +137,7 @@ webota.py pkg-install <URL> [--switch-app] [--reset-settings] [--reset-data]   #
 webota.py clean [-y]
 webota.py signing-key init|show|publish · pack · device-config · usb-install --port COMx · token · claim
 # device-config · usb-install: [--github-owner LOGIN ...] [--no-github-auth]
+# usb-install 에 둘 다 없으면 승인할 계정을 묻는다(기본: gh 로그인 계정, -y 면 묻지 않음)
 ```
 `pkg-install`과 `clean`은 기기가 GitHub 확인을 요구하면 코드를 보여 주고 승인을 기다립니다.
 
