@@ -703,6 +703,14 @@ def main():
     check("usb-install — 기기 파일 없으면 거부", raises(lambda: cl.usb_install("COM9", proj, "U" * 32, dry_run=True,
                                                                           log=lambda *_: None), "기기 파일이 없다"))
 
+    # ── CLI 시각 — 기기·GitHub 의 UTC 를 이 PC 의 현지 시각으로(1.2.4). 시간대에 상관없이 '같은 순간' 인지 본다.
+    from datetime import datetime, timezone
+    exp = datetime(2026, 10, 25, 21, 34, 11, tzinfo=timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M:%S")
+    check("local_time — 기기 이력(초 포함)", cl.local_time("2026-10-25 21:34:11") == exp, cl.local_time("2026-10-25 21:34:11"))
+    check("local_time — GitHub ISO", cl.local_time("2026-10-25T21:34:11Z") == exp)
+    check("local_time — 분까지만", cl.local_time("2026-10-25 21:34") == exp[:16])
+    check("local_time — 못 읽는 값은 그대로", cl.local_time("x") == "x" and cl.local_time(None) == "" and cl.local_time("") == "")
+
     webota._stop = True
     shutil.rmtree(root, ignore_errors=True)
     shutil.rmtree(local, ignore_errors=True)
