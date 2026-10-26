@@ -34,7 +34,7 @@ import sys
 import time
 import urllib.parse
 
-VERSION = "1.2.2"
+VERSION = "1.2.3"
 DEFAULT_PORT = 8266
 PROJECT_FILE = "webota.project.json"
 SIGNING_KEY = "~/.config/webota/signing-key.pem"       # 개인키 — 기기로 가지 않는다
